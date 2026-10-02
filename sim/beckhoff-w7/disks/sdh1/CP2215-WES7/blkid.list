@@ -1,0 +1,2 @@
+/dev/sda1: LABEL="System Reserved" UUID="1C2D3E4F5A6B7C8D" TYPE="ntfs"
+/dev/sda2: UUID="2D3E4F5A6B7C8D9E" TYPE="ntfs"

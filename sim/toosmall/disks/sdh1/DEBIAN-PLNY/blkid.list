@@ -1,0 +1,2 @@
+/dev/sda1: UUID="1B2C-3D4F" TYPE="vfat"
+/dev/sda2: UUID="0d1e2f30-4a5b-4c6d-9e8f-102132435466" TYPE="ext4"

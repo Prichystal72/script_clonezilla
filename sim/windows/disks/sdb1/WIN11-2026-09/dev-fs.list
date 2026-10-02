@@ -1,0 +1,4 @@
+# <Device name>   <File system>   <Size>
+/dev/nvme0n1p1 vfat 104857600
+/dev/nvme0n1p3 ntfs 511327600640
+/dev/nvme0n1p4 ntfs 659889664

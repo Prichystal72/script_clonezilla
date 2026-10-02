@@ -1,0 +1,3 @@
+/dev/nvme0n1p1: UUID="4C3D-2E1F" TYPE="vfat"
+/dev/nvme0n1p3: LABEL="Windows" UUID="5A4B3C2D1E0F9A8B" TYPE="ntfs"
+/dev/nvme0n1p4: UUID="6B5C4D3E2F1A0B9C" TYPE="ntfs"

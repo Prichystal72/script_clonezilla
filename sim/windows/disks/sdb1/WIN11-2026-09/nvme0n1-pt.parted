@@ -1,0 +1,3 @@
+Model: ATA SSD (scsi)
+Disk /dev/nvme0n1: 1000215216s
+Sector size (logical/physical): 512B/512B

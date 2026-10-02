@@ -1,0 +1,7 @@
+label: dos
+label-id: 0x1a2b3c4d
+device: /dev/sdb
+unit: sectors
+sector-size: 512
+
+/dev/sdb1 : start=63, size=3909681, type=7

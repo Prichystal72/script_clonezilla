@@ -1,0 +1,10 @@
+label: gpt
+label-id: 6A1F3E2B-9C4D-4E5F-8A7B-1C2D3E4F5A6C
+device: /dev/sda
+unit: sectors
+first-lba: 2048
+last-lba: 250069646
+sector-size: 512
+
+/dev/sda1 : start=2048, size=1048576, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=1D2E3F40-5A6B-4C7D-8E9F-0A1B2C3D4E60, name="EFI System Partition"
+/dev/sda2 : start=1050624, size=249019023, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=2E3F4051-6B7C-4D8E-9FA0-1B2C3D4E5F61

@@ -1,0 +1,3 @@
+# <Device name>   <File system>   <Size>
+/dev/sda1 ntfs 4017259008
+/dev/sdb1 ntfs 2001756672

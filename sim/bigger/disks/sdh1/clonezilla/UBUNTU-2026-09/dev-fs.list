@@ -1,0 +1,3 @@
+# <Device name>   <File system>   <Size>
+/dev/sda1 vfat 536870912
+/dev/sda2 ext4 127497739776

@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.sh text eol=lf
+sim/** text eol=lf
+*-mbr binary
+*-hidden-data-after-mbr binary
+*.cmd text eol=crlf
+*.png binary
