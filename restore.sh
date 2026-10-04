@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.2.11"
+readonly VERSION="1.2.13"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -1861,15 +1861,20 @@ fs_shrink() {
 
 # Kontrola FS (menu 10 a po obnově)
 fs_check() {
-    local fs=$1 dev=$2 repair=${3:-0}
+    local fs=$1 dev=$2 repair=${3:-0} rc=0
     case "$fs" in
-        ext2|ext3|ext4) if (( repair )); then run_try e2fsck -fy "$dev"; else run_try e2fsck -fn "$dev"; fi ;;
-        ntfs)           if (( repair )); then run_try ntfsfix "$dev"; else run_try ntfsfix -n "$dev"; fi ;;
-        vfat|fat*)      if (( repair )); then run_try fsck.vfat -a "$dev"; else run_try fsck.vfat -n "$dev"; fi ;;
-        xfs)            if (( repair )); then run_try xfs_repair "$dev"; else run_try xfs_repair -n "$dev"; fi ;;
-        btrfs)          if (( repair )); then run_try btrfs check --repair "$dev"; else run_try btrfs check --readonly "$dev"; fi ;;
-        *)              warn "Pro FS '$fs' není kontrola k dispozici." ;;
+        ext2|ext3|ext4) if (( repair )); then run_try e2fsck -fy "$dev" || rc=$?; else run_try e2fsck -fn "$dev" || rc=$?; fi ;;
+        ntfs)           if (( repair )); then run_try ntfsfix "$dev" || rc=$?; else run_try ntfsfix -n "$dev" || rc=$?; fi ;;
+        vfat|fat*)      if (( repair )); then run_try fsck.vfat -a "$dev" || rc=$?; else run_try fsck.vfat -n "$dev" || rc=$?; fi ;;
+        exfat)          if (( repair )); then run_try fsck.exfat -y "$dev" || rc=$?; else run_try fsck.exfat -n "$dev" || rc=$?; fi ;;
+        xfs)            if (( repair )); then run_try xfs_repair "$dev" || rc=$?; else run_try xfs_repair -n "$dev" || rc=$?; fi ;;
+        btrfs)          if (( repair )); then run_try btrfs check --repair "$dev" || rc=$?; else run_try btrfs check --readonly "$dev" || rc=$?; fi ;;
+        *)              warn "Pro FS '${fs:-neznámý}' na $dev není kontrola k dispozici."; return 0 ;;
     esac
+    if (( rc == 0 )); then ok "Souborový systém $dev ($fs): bez chyb."
+    elif (( repair )) && [[ "$fs" == ext* || "$fs" == vfat || "$fs" == fat* ]] && (( rc == 1 )); then ok "Souborový systém $dev ($fs): chyby opraveny."
+    else warn "Souborový systém $dev ($fs): kontrola hlásí problém (kód $rc) – podrobnosti výše a v logu."; fi
+    return 0
 }
 
 # =============================================================================
@@ -2317,6 +2322,9 @@ editor_label() {
     editor_pick_part || return 0
     n=$UI_REPLY
     ui_input "Nový LABEL pro ${ED[$n.pname]} (${ED[$n.fs]:-?})" "${ED[$n.label]}" || return 0
+    if [[ "${ED[$n.fs]}" == @(vfat|fat*) ]] && { LC_ALL=C grep -q '[^ -~]' <<<"$UI_REPLY" || (( ${#UI_REPLY} > 11 )); }; then
+        warn "Popisek FAT smí mít nejvýš 11 znaků bez diakritiky (A–Z, 0–9, mezera, _ -)."; return 0
+    fi
     ED_UNDO+=("$(declare -p ED ED_PLAN)")
     ED_PLAN+=("label $n $UI_REPLY   # ${ED[$n.pname]}")
     ED[$n.label]=$UI_REPLY
@@ -2347,6 +2355,7 @@ editor_apply() {
     (( ${#ED_PLAN[@]} )) || { info "Plán je prázdný."; return 0; }
     mapfile -t plan < <(editor_plan_sorted)
     total=${#plan[@]}
+    (( total == ${#ED_PLAN[@]} )) || die "$E_GEN" "Interní chyba: plán má ${#ED_PLAN[@]} kroků, k provedení připraveno $total – nic se nezapíše."
     ui_confirm_disk "$disk" "$(disk_summary "$disk"; echo; echo "Plán (v pořadí provedení):"; printf '  %s\n' "${plan[@]}")" || return 0
     # záloha tabulky oddílů před prvním zápisem
     bk="${OPT_TMPDIR:-/tmp}/pt-backup-$disk-$(date +%Y%m%d-%H%M%S).sf"
@@ -2362,6 +2371,16 @@ editor_apply() {
         step "$i" "$total" "$s"
         case "$op" in
             shrink)
+                if [[ "${ED[$n.fs]}" == @(vfat|fat*|exfat) ]]; then
+                    # FAT/exFAT nejde zmenšit na místě: data stranou, menší oddíl, nový FS, data zpět
+                    fat_save_tmp "$dev" "$(fat_fs_bytes "$dev")" "${ED[$n.fs]}"
+                    run_sh "echo ', $(( arg / ED[sector] ))' | sfdisk --no-reread -q --wipe-partitions never -N $n /dev/$disk"
+                    disk_rescan "$disk" "$n"
+                    fat_restore_tmp "$dev" "${ED[$n.start]}" "${ED[$n.fs]}"
+                    fs_check "${ED[$n.fs]}" "$dev" 0
+                    DONE_STEPS+=("$s")
+                    continue
+                fi
                 [[ "${ED[$n.fs]}" == swap ]] || fs_shrink "${ED[$n.fs]}" "$dev" "$arg"
                 run_sh "echo ', $(( arg / ED[sector] ))' | sfdisk --no-reread -q --wipe-partitions never -N $n /dev/$disk"
                 disk_rescan "$disk" "$n"
@@ -2995,27 +3014,39 @@ menu_11_boot() {
         efi "Vytvořit UEFI boot záznam (efibootmgr)$(menu_avail efibootmgr)" \
         grub "Reinstalace GRUB přes chroot" \
         mbr "Obnovit boot kód MBR (446 B) z obrazu" \
-        gpt "Přesunout záložní GPT na konec disku (sgdisk -e)" || return 0
+        gpt "Přesunout záložní GPT na konec disku" || return 0
     local what=$UI_REPLY
     disk_select_target "Disk" || return 0
     d=$UI_REPLY
     case "$what" in
-        efi)  ui_input "Číslo EFI oddílu" "1" || return 0
+        efi)  if (( ! SIMULATE )) && [[ ! -d /sys/firmware/efi ]]; then
+                  ui_msg "Počítač je spuštěný v režimu BIOS (Legacy) – UEFI boot záznam z něj zapsat nejde. Spusť Clonezillu v režimu UEFI."
+                  return 0
+              fi
+              ui_input "Číslo EFI oddílu" "1" || return 0
               run efibootmgr -c -d "/dev/$d" -p "$UI_REPLY" -L "Windows Boot Manager" -l '\EFI\Microsoft\Boot\bootmgfw.efi'
               info "Záznam v NVRAM platí jen pro tento počítač." ;;
         grub) part_select "Kořenový oddíl Linuxu" || return 0
               local r=$UI_REPLY m=/tmp/restore-chroot
               run mkdir -p "$m"; run mount "/dev/$r" "$m"
               for x in dev proc sys run; do run mount --bind "/$x" "$m/$x"; done
-              run chroot "$m" grub-install "/dev/$d"
-              run chroot "$m" update-grub
-              for x in run sys proc dev; do run umount "$m/$x"; done
-              run umount "$m" ;;
+              local grc=0
+              run_try chroot "$m" grub-install "/dev/$d" || grc=$?
+              (( grc )) || run_try chroot "$m" update-grub || grc=$?
+              for x in run sys proc dev; do run_try umount "$m/$x" || true; done
+              run_try umount "$m" || true
+              if (( grc )); then err "Reinstalace GRUB selhala (kód $grc) – je /dev/$r kořenový oddíl Linuxu s balíčkem grub?"
+              else ok "GRUB na /dev/$d přeinstalován."; fi ;;
         mbr)  src_select ro || return 0
               img_select || return 0
               local s; read -r s _ <"$IMG_DIR/disk"
-              run dd if="$IMG_DIR/$s-mbr" of="/dev/$d" bs=446 count=1 conv=notrunc ;;
-        gpt)  run sgdisk -e "/dev/$d" ;;
+              [[ -r "$IMG_DIR/$s-mbr" ]] || { ui_msg "Záloha ${IMG_DIR##*/} neobsahuje boot kód MBR ($s-mbr)."; return 0; }
+              ui_confirm_disk "$d" "$(disk_summary "$d"; echo "Zapíše se boot kód MBR (446 B) ze zálohy ${IMG_DIR##*/}; tabulka oddílů zůstane.")" || return 0
+              run dd if="$IMG_DIR/$s-mbr" of="/dev/$d" bs=446 count=1 conv=notrunc status=none
+              ok "Boot kód MBR na /dev/$d obnoven ze zálohy ${IMG_DIR##*/}." ;;
+        gpt)  [[ "$(sys_sfdisk_dump "$d" | sed -n 's/^label: //p')" == gpt ]] || { ui_msg "Disk /dev/$d nemá tabulku GPT."; return 0; }
+              run sfdisk --relocate gpt-bak-std "/dev/$d"
+              ok "Záložní GPT je na konci disku /dev/$d." ;;
     esac
 }
 
@@ -3027,9 +3058,23 @@ menu_12_convert() {
     label=$(sys_sfdisk_dump "$d" | sed -n 's/^label: //p')
     warn "Převod tabulky může znemožnit boot (BIOS ↔ UEFI). Data oddílů zůstávají, ale udělej si zálohu."
     ui_confirm_disk "$d" "$(disk_summary "$d"; echo "Aktuální tabulka: ${label:-žádná}")" || return 0
-    run_sh "sfdisk --dump /dev/$d > $PARTIMAG_MP/backup-pt-$d-$(date +%Y%m%d%H%M).sf"
-    if [[ "$label" == gpt ]]; then run sgdisk -m "$(sys_sfdisk_dump "$d" | grep -c '^/dev/' | xargs seq -s: 1)" "/dev/$d"
-    else run sgdisk -g "/dev/$d"; fi
+    local bk
+    bk="/tmp/backup-pt-$d-$(date +%Y%m%d%H%M).sf"
+    if [[ -n "$(src_find_mounted)" ]]; then
+        findmnt -no OPTIONS "$PARTIMAG_MP" 2>/dev/null | grep -qw ro && run mount -o remount,rw "$PARTIMAG_MP"
+        bk="$PARTIMAG_MP/backup-pt-$d-$(date +%Y%m%d%H%M).sf"
+    fi
+    run_sh "sfdisk --dump /dev/$d > '$bk'"
+    info "Záloha tabulky oddílů: $bk (vrácení: sfdisk /dev/$d < $bk)"
+    if [[ "$label" == gpt ]]; then
+        (( $(sys_sfdisk_dump "$d" | grep -c '^/dev/') <= 4 )) || die "$E_USER" "GPT s více než 4 oddíly nejde převést na MBR (jen 4 primární oddíly)."
+        run sgdisk -m "$(sys_sfdisk_dump "$d" | grep -c '^/dev/' | xargs seq -s: 1)" "/dev/$d"
+        ok "Disk /dev/$d převeden GPT → MBR."
+    else
+        run sgdisk -g "/dev/$d"
+        ok "Disk /dev/$d převeden MBR → GPT."
+    fi
+    run_try partprobe "/dev/$d" || true
 }
 
 # 13) Bezpečné smazání disku
@@ -3067,8 +3112,12 @@ menu_14_ocs() {
     sys_ocs_help | grep -q -- '-k1' || warn "ocs-sr --help nezná -k1 – zkontroluj přepínače."
     ui_msg "Příkaz: ocs-sr $opts restoredisk ${IMG_DIR##*/} $tgt"
     ui_confirm_disk "$tgt" "$(disk_summary "$tgt")" || return 0
+    [[ "$UI_BACKEND" == plain ]] || clear
     # shellcheck disable=SC2086
     run ocs-sr $opts restoredisk "${IMG_DIR##*/}" "$tgt"
+    run sync
+    ui_msg "Clonezilla (ocs-sr) dokončila obnovu zálohy ${IMG_DIR##*/} na /dev/$tgt.
+Podrobný výpis Clonezilly: /var/log/clonezilla.log"
 }
 
 # 15) Nastavení
@@ -3294,10 +3343,8 @@ fs_min_bytes() {
         ntfs)
             out=$(ntfsresize --info --force --no-progress-bar "$dev" 2>/dev/null || true)
             min=$(sed -nE 's/.*resize at ([0-9]+) bytes.*/\1/p' <<<"$out" | head -1) ;;
-        vfat|fat*)
-            if sys_have fatresize; then
-                min=$(fatresize -i "$dev" 2>/dev/null | sed -nE 's/^Min size: *([0-9]+).*/\1/p')
-            fi ;;
+        vfat|fat*|exfat)
+            min=$(fs_used_bytes "$dev" "$fs") ;;
     esac
     [[ -z "${min:-}" ]] && return 0
     local res=$(( min / 10 ))
@@ -3336,6 +3383,29 @@ tmp_workdir() {
 # Bezpečné zvětšení FAT: nejdřív kopie obsahu do dočasného souboru, pak fatresize + kontrola;
 # když fatresize chybí, selže nebo kontrola neprojde, FAT se vytvoří znovu ze zálohy (stejné ID, typ, label).
 # fs_fat_rebuild <zařízení> <původní_bajty> <začátek_oddílu> [fs]
+# Obsazená data FAT/exFAT do dočasného řídkého souboru: fat_save_tmp <zařízení> <bajty FS> <fs> → FAT_TMP_IMG, FAT_TMP_LOOP
+FAT_TMP_IMG="" FAT_TMP_LOOP=""
+fat_save_tmp() {
+    local dev=$1 old=$2 fs=$3 tool="partclone.vfat"
+    [[ "$fs" == exfat ]] && tool="partclone.exfat"
+    FAT_TMP_IMG="$(tmp_workdir)/restore-fat-$$.img"
+    run truncate -s "$old" "$FAT_TMP_IMG"
+    loop_attach "$FAT_TMP_IMG"; FAT_TMP_LOOP=$LOOP_LAST
+    if sys_have "$tool"; then
+        run_sh "$tool -c -q -s $dev -o - -L /tmp/partclone-fat.log 2>>/tmp/partclone-fat.log | $tool -r -s - -o $FAT_TMP_LOOP -L /tmp/partclone-fat.log"
+    else
+        run dd if="$dev" of="$FAT_TMP_LOOP" bs=4M count=$(( (old + 4 * MiB - 1) / (4 * MiB) )) conv=sparse status=progress
+    fi
+}
+# Nový FS přes celý (nový) oddíl a data z dočasného souboru zpět: fat_restore_tmp <zařízení> <začátek> <fs>
+fat_restore_tmp() {
+    local dev=$1 start=$2 fs=$3
+    if [[ "$fs" == exfat ]]; then fs_exfat_copy "$FAT_TMP_LOOP" "$dev"; else fs_fat_copy "$FAT_TMP_LOOP" "$dev" "$start"; fi
+    loop_detach "$FAT_TMP_LOOP"
+    run rm -f "$FAT_TMP_IMG"
+    FAT_TMP_IMG="" FAT_TMP_LOOP=""
+}
+
 fs_fat_rebuild() {
     local dev=$1 old=$2 start=$3 fs=${4:-vfat} dir img l used tool
     dir=$(tmp_workdir)
@@ -3597,6 +3667,7 @@ editor_plan_sorted() {
     local s op n arg key
     for s in "${ED_PLAN[@]}"; do
         read -r op n arg _ <<<"$s"
+        [[ "$arg" =~ ^[0-9]+$ ]] || arg=0   # label: text, ne číslo
         case "$op" in
             delete) key=0 ;; shrink) key=1 ;;
             move)   if (( arg < ${ED_ORIG_START[$n]:-0} )); then key=2; else key=3; fi ;;

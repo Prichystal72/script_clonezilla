@@ -1,6 +1,6 @@
 # restore.sh – obnova záloh Clonezilly na jiný disk
 
-`restore.sh` (verze 1.2.11) obnoví zálohu Clonezilly na jiný disk, větší i menší, a sám přepočítá oddíly.
+`restore.sh` (verze 1.2.13) obnoví zálohu Clonezilly na jiný disk, větší i menší, a sám přepočítá oddíly.
 U panelů Beckhoff (XP Embedded, WES7, Windows CE) zachová start oddílu na sektoru 63, boot kód,
 disk signature a aktivní oddíl, takže systém nabootuje. Zálohu se dvěma kartami (systém + data)
 obnoví na jeden disk. Umí také vytvořit zálohu (jeden disk, více disků, vybrané oddíly) a obnovit libovolnou
@@ -366,6 +366,7 @@ Automatické spuštění po bootu (volitelné): do parametrů jádra v `syslinux
 | `restore.sh` | celý nástroj (jeden soubor, bash 4+) |
 | `test/test-sim.sh` | 50 kontrol v simulaci – funguje i v Git Bash na Windows |
 | `test/test-loop.sh` | 258 kontrol na skutečných datech (loop disky, Linux/WSL2, root) |
+| `test/test-menus.sh` | průchod menu 5–9 klávesnicí (info, prohlížení, disky, editor, kontrola FS, boot, MBR ↔ GPT, smazání, nastavení), 44 kontrol |
 | `test/qvm.sh` | ovládání testovací VM v QEMU: skutečná Clonezilla z ISO, disky jako soubory, snímky obrazovky |
 | `test/test-matrix.sh` | matice 61 kombinací (FS × tabulka × velikost do 3 TB × obnova / klon × režim, české popisky, zálohy na FAT32), 583 kontrol |
 | `test/make-sim-fixtures.sh` | vygeneruje simulační scénáře do `sim/` |

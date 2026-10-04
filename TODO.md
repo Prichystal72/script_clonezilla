@@ -1,6 +1,6 @@
 # TODO – co ještě nebylo vyzkoušeno a možné upgrady
 
-Stav k verzi 1.2.11 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací do 3 TB, 583 kontrol; ve VM s USB disky ověřen klon, záloha (1 i 2 disky) a sloučená obnova. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
+Stav k verzi 1.2.13 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací do 3 TB, 583 kontrol; ve VM s USB disky ověřen klon, záloha (1 i 2 disky) a sloučená obnova. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
 `test/test-sim.sh` (39 kontrol) a ručně ve VMware + Clonezilla 3.3.3-37 obnova záloh Beckhoff CF
 (1 karta i 2 karty → jeden SSD).
 
@@ -21,20 +21,18 @@ Stav k verzi 1.2.11 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací d
       (UEFI úprava `boot/grub/grub.cfg` je zkoušená jen na kopii souboru)
 - [ ] Čeština s diakritikou na konzoli Clonezilly (teď se zobrazuje bez háčků a čárek)
 
-## 2. Funkce ověřené jen v simulaci (ostře nespuštěné)
+## 2. Funkce menu
 
-- [ ] Menu 2 – obnova vybraných oddílů na existující oddíly
-- [ ] Menu 3 (3/1, 3/2, 3/3) – interaktivní výběr disků a oddílů ve VM s Clonezillou (příkazový řádek `--save-disk`
-      / `--save-part` / `--separate` je ověřený na loop discích, menu jen v simulaci)
-- [ ] Menu 1 – *Více záloh najednou* a *Vlastní rozdělení* ve VM (parametry `--image A,B`, `--groups` jsou ověřené na loop discích)
-- [ ] Menu 2 – opakování obnovy vybraných oddílů z dalšího disku / další zálohy
-- [ ] Menu 4 – klon disk → disk
-- [ ] Menu 5/2 – prohlížení obsahu zálohy (obnova do dočasného souboru + mount)
-- [ ] Menu 8 – kontrola FS, opravy bootu (EFI záznamy `efibootmgr`, GRUB přes chroot, MBR kód, `sgdisk -e`)
-- [ ] Menu 8/3 – převod MBR ↔ GPT (`sgdisk -m` / `-g`)
-- [ ] Menu 9/1 – bezpečné smazání (`blkdiscard`, `nvme format`, ATA secure erase)
-- [ ] Menu 9/2 – předání Clonezille (`ocs-sr`), přepínače z `ocs-sr --help`
-- [ ] Editor: smazání oddílu a změna LABEL ostře (zmenšení, zvětšení a přesun ověřeny)
+Ověřeno 4. 10. 2026 klávesnicí na loop discích (`test/test-menus.sh`, 44 kontrol) a ve skutečné Clonezille v QEMU:
+- [x] 5/1 informace o záloze + `partclone.chkimg` + SHA1SUMS, 5/2 prohlížení obsahu (připojení a úklid)
+- [x] 6 informace o discích, 7 editor (zmenšení ext4 i FAT, přesun, LABEL, smazání oddílu)
+- [x] 8/1 kontrola a oprava FS s výsledkem, 8/2 boot kód MBR ze zálohy, záložní GPT na konec (`sfdisk --relocate`)
+- [x] 8/3 převod MBR → GPT → MBR (data beze změny), 9/1 smazání (wipefs), 9/3 nastavení (komprese gzip)
+- [x] 9/2 předání Clonezille (`ocs-sr restoredisk -k1`) ve skutečné Clonezille – obnova WIN na větší disk
+- [ ] 8/2 UEFI záznam (`efibootmgr`) – jen hláška v režimu BIOS; na UEFI počítači neověřeno
+- [ ] 8/2 reinstalace GRUB přes chroot – neověřeno (potřebuje skutečný Linux s GRUB)
+- [ ] 9/1 `blkdiscard`, NVMe format, ATA Secure Erase – neověřeno (jen wipefs)
+- [ ] 3/3 disky i oddíly dohromady a 1 „Vlastní rozdělení“ / „Více záloh“ – jen simulace a loop testy, ne v dialog UI
 
 ## 3. Formáty a souborové systémy
 
