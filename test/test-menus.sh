@@ -137,9 +137,13 @@ check "9/3 záloha v gzip" compgen -G "$W/mnt/GZ/*.gz.aa"
 umount "$W/mnt"
 
 echo "== 9/2 Předání Clonezille (ve WSL ocs-sr není → srozumitelná hláška)"
-STDIN="9\n2\n0\n"; rs m92
-check "9/2 kód 0" [ "$RC" = 0 ] || showlog
-check "9/2 hláška" grep -qE "ocs-sr není k dispozici|ocs-sr" "$LAST_LOG"
+if command -v ocs-sr >/dev/null; then
+    echo "  – přeskočeno: ocs-sr je k dispozici (předání se zkouší ve skutečné Clonezille v QEMU)"
+else
+    STDIN="9\n2\n0\n"; rs m92
+    check "9/2 kód 0" [ "$RC" = 0 ] || showlog
+    check "9/2 hláška" grep -qE "ocs-sr není k dispozici|ocs-sr" "$LAST_LOG"
+fi
 
 echo
 echo "Výsledek: $PASS OK, $FAIL chyb   (logy: $W/logs)"

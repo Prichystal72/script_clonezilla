@@ -1,6 +1,6 @@
 # restore.sh – obnova záloh Clonezilly na jiný disk
 
-`restore.sh` (verze 1.2.13) obnoví zálohu Clonezilly na jiný disk, větší i menší, a sám přepočítá oddíly.
+`restore.sh` (verze 1.2.14) obnoví zálohu Clonezilly na jiný disk, větší i menší, a sám přepočítá oddíly.
 U panelů Beckhoff (XP Embedded, WES7, Windows CE) zachová start oddílu na sektoru 63, boot kód,
 disk signature a aktivní oddíl, takže systém nabootuje. Zálohu se dvěma kartami (systém + data)
 obnoví na jeden disk. Umí také vytvořit zálohu (jeden disk, více disků, vybrané oddíly) a obnovit libovolnou
@@ -285,7 +285,12 @@ Cíl: po bootu z flashky se bez psaní příkazů otevře `restore.sh` stejně j
    a `ocs_live_keymap="NONE"`.
 
 Při zlomu bootu stačí vrátit původní `syslinux.cfg.bak`, `isolinux.cfg.bak` a `grub.cfg.bak` na jejich místo.
-Boot z flashky na skutečném počítači (BIOS i UEFI) zatím není ověřený.
+
+Skript funguje i se starší **32bitovou Clonezillou 3.1.0-22 (i686)**, vhodnou pro slabší panely. Ověřeno
+v QEMU na kopii takové flashky: boot BIOS (syslinux) i UEFI (64bitový firmware, GRUB). Obojí s automatickým
+startem `restore.sh`, rozpoznáním flashky, klonem FAT32 + NTFS 4 → 8 GB a exFAT 8 → 16 GB. Navíc sady testů běžely
+uvnitř jejího systému (partclone 0.3.23, util-linux 2.38, exfatprogs 1.2.0): simulace 50, matice 553 (bez exFAT –
+jádro WSL ho nemá), loop testy 258 a menu 42 kontrol bez chyby. Boot na skutečném počítači zatím ověřený není.
 
 ## Kontrola výsledku a první start panelu
 

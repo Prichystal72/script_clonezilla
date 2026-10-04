@@ -1,6 +1,6 @@
 # TODO – co ještě nebylo vyzkoušeno a možné upgrady
 
-Stav k verzi 1.2.13 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací do 3 TB, 583 kontrol; ve VM s USB disky ověřen klon, záloha (1 i 2 disky) a sloučená obnova. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
+Stav k verzi 1.2.14 (4. 10. 2026). Regrese prošla i uvnitř 32bitové Clonezilly 3.1.0-22 (viz README). Navíc `test/test-matrix.sh`: 61 kombinací do 3 TB, 583 kontrol; ve VM s USB disky ověřen klon, záloha (1 i 2 disky) a sloučená obnova. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
 `test/test-sim.sh` (39 kontrol) a ručně ve VMware + Clonezilla 3.3.3-37 obnova záloh Beckhoff CF
 (1 karta i 2 karty → jeden SSD).
 
@@ -18,7 +18,8 @@ Stav k verzi 1.2.13 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací d
 
 - [ ] **Barvy oken** (zdroj zelená, cíl červená) ve VM s `dialog` – v testech jsou ověřené jen soubory motivu a plain režim
 - [ ] **Flashka** upravená `vm/make-flash.sh` (BIOS i UEFI menu): ověřit boot na skutečném počítači – BIOS / legacy i UEFI
-      (UEFI úprava `boot/grub/grub.cfg` je zkoušená jen na kopii souboru)
+      (v QEMU ověřeno 4. 10. 2026 na kopii flashky s Clonezillou 3.1.0-22 i686: BIOS i UEFI, automatický start, klon)
+- [ ] UEFI s **32bitovým firmwarem** (některé tablety / panely) – flashka má `bootia32.efi`, neověřeno
 - [ ] Čeština s diakritikou na konzoli Clonezilly (teď se zobrazuje bez háčků a čárek)
 
 ## 2. Funkce menu
@@ -55,15 +56,14 @@ Ověřeno 4. 10. 2026 klávesnicí na loop discích (`test/test-menus.sh`, 44 ko
 
 - [ ] Editor oddílů: vytvoření nového oddílu (`mkfs` + LABEL), změna typu oddílu
 - [ ] Nastavení geometrie CHS při zápisu tabulky (teď se jen porovná a upozorní)
-- [ ] Menu 8 → „Přesunout záložní GPT na konec (sgdisk -e)“: sgdisk hlásí u tabulek s first-lba 2048 falešný překryv
-      (obnova ho už nepoužívá) – nahradit zápisem přes sfdisk
+- [x] Menu 8 → „Přesunout záložní GPT na konec“: místo `sgdisk -e` se používá `sfdisk --relocate gpt-bak-std`
 - [ ] Obnova ve více krocích: nejdřív zvolit všechny cíle a potvrdit je, teprve potom zapisovat (teď se zapisuje na
       první cíl před dotazem na druhý; parametry `--target` / `--yes-i-know` se kontrolují předem všechny)
 - [ ] Obnova oddílů z obrazu jen vybraných oddílů jako celého disku (teď se odmítne, jde jen menu 2)
 - [ ] `--sizes` i pro obnovu „každý disk zvlášť“
 - [ ] Průběh partclone v okně dialogu (gauge) místo textového výpisu
 - [ ] Tabulky a souhrny vyzkoušet a případně zúžit pro konzoli 80 sloupců
-- [ ] Automatický start skriptu po bootu flashky (`ocs_live_run` v `syslinux.cfg` / `grub.cfg`) – připravit hotovou flashku
+- [x] Automatický start skriptu po bootu flashky (`ocs_live_run` v `syslinux.cfg` / `grub.cfg`) – `vm/make-flash.sh`
 - [ ] Odhad doby obnovy podle velikosti dat
 - [ ] Ověření obrazu (`partclone.chkimg`) volitelně před každou obnovou
 - [ ] Anglická verze textů (jazyk podle nastavení)

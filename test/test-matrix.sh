@@ -139,7 +139,7 @@ mksrc() {
                        [[ "$fl" == cz ]] && cz_label "$p" 16 ;;
             fat32|efi) mkfs.fat -F 32 -n "F32_$i" "$p" >/dev/null
                        [[ "$fl" == cz ]] && cz_label "$p" 32 ;;
-            exfat)     mkfs.exfat -q -L "EXF_$i" "$p" >/dev/null ;;
+            exfat)     mkfs.exfat -L "EXF_$i" "$p" >/dev/null ;;
             ntfs|rec)  mkfs.ntfs -Q -q -L "NTFS_$i" -p "$start" -H 255 -S 63 "$p" >/dev/null 2>&1 ;;
             ext4)      mkfs.ext4 -q -L "EXT_$i" "$p" ;;
             swap)      mkswap -L "SWP_$i" "$p" >/dev/null ;;
@@ -190,6 +190,7 @@ verify() {
         # MBR adresuje nejvýš 2^32 sektorů (2 TiB) – dál se disk využít nedá
         [[ "$tbl" != gpt ]] && (( disk > 4294967296 )) && disk=4294967296
         for (( i = 1; i <= n; i++ )); do
+            [[ -b "${t}p$i" ]] || continue
             end=$(( $(pstart "${t}p$i") + $(psize "${t}p$i") / 512 ))
             (( end > last_end )) && last_end=$end
         done

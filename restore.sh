@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.2.13"
+readonly VERSION="1.2.14"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -321,6 +321,15 @@ blk_load() {
         if [[ "${row[TYPE]:-}" == loop ]] && (( ALLOW_LOOP )); then BLK[$name.TYPE]=disk; row[TYPE]=disk; fi
         [[ "${row[TYPE]:-}" == disk ]] && BLK_DISKS+=("$name")
     done < <(sys_lsblk)
+    # lsblk bere FS z databáze udev – čerstvě vytvořený FS tam ještě nemusí být; doplnit přímým čtením
+    if (( ! SIMULATE )); then
+        for name in "${BLK_NAMES[@]}"; do
+            [[ "${BLK[$name.TYPE]:-}" == part && -z "${BLK[$name.FSTYPE]:-}" && -b "/dev/$name" ]] || continue
+            while IFS='=' read -r k v; do
+                case "$k" in TYPE) BLK[$name.FSTYPE]=$v ;; LABEL) BLK[$name.LABEL]=$v ;; UUID) BLK[$name.UUID]=$v ;; esac
+            done < <(blkid -p -o export "/dev/$name" 2>/dev/null || true)
+        done
+    fi
     return 0
 }
 
@@ -790,20 +799,28 @@ part_name() {
 # Číslo oddílu z názvu (sda12 → 12, nvme0n1p3 → 3)
 part_num() { [[ "$1" =~ ([0-9]+)$ ]] && echo "${BASH_REMATCH[1]}"; }
 
-# Najde flashku s Clonezillou (podle mountpointu /run/live/medium)
+# Najde flashku s Clonezillou (podle mountpointu /run/live/medium; starší Clonezilla: /usr/lib/live/mount/medium)
 live_detect() {
-    local n mp
+    local n mp src
     for n in "${BLK_NAMES[@]}"; do
         mp=${BLK[$n.MOUNTPOINT]:-}
-        if [[ "$mp" == /run/live/medium || "$mp" == /lib/live/mount/medium ]]; then
+        if [[ "$mp" == /run/live/medium || "$mp" == /lib/live/mount/medium || "$mp" == /usr/lib/live/mount/medium ]]; then
             LIVE_MEDIUM=$mp
             LIVE_DISK=$(blk_parent "$n")
             return 0
         fi
     done
     if (( ! SIMULATE )); then
-        for mp in /run/live/medium /lib/live/mount/medium; do
-            if [[ -d "$mp" ]]; then LIVE_MEDIUM=$mp; fi
+        for mp in /run/live/medium /usr/lib/live/mount/medium /lib/live/mount/medium; do
+            [[ -d "$mp" ]] || continue
+            src=$(findmnt -nro SOURCE "$mp" 2>/dev/null | head -1)
+            src=${src#/dev/}
+            if [[ -n "$src" && -n "${BLK[$src.TYPE]:-}" ]]; then
+                LIVE_MEDIUM=$mp
+                LIVE_DISK=$(blk_parent "$src")
+                return 0
+            fi
+            [[ -n "$LIVE_MEDIUM" ]] || LIVE_MEDIUM=$mp
         done
     fi
     return 0
@@ -2180,8 +2197,12 @@ fix_hidden_sectors() {
     fi
     cur=$(dd if="$dev" bs=1 skip=28 count=4 status=none | od -An -tu4 | tr -d ' ')
     if [[ "$cur" == "$want" ]]; then ok "hidden sectors $dev = $cur"; return 0; fi
-    warn "hidden sectors na $dev je $cur, ale oddíl začíná na $want."
-    if (( ! auto )) && ! ui_yesno "Opravit hidden sectors na $want?"; then return 0; fi
+    if (( auto )); then
+        info "hidden sectors na $dev je $cur, oddíl začíná na $want – opravuji."
+    else
+        warn "hidden sectors na $dev je $cur, ale oddíl začíná na $want."
+        ui_yesno "Opravit hidden sectors na $want?" || return 0
+    fi
     hex=$(printf '%08x' "$want")
     bytes="\\x${hex:6:2}\\x${hex:4:2}\\x${hex:2:2}\\x${hex:0:2}"
     printf '%b' "$bytes" | dd of="$dev" bs=1 seek=28 count=4 conv=notrunc status=none
@@ -3455,7 +3476,7 @@ fs_exfat_copy() {
         label=$(blkid -p -s LABEL -o value "$src")
     fi
     sys_have mkfs.exfat || die "$E_DEP" "Chybí mkfs.exfat (exfatprogs) – exFAT nelze vytvořit znovu."
-    run mkfs.exfat -q ${label:+-L "$label"} "$dst"
+    run mkfs.exfat ${label:+-L "$label"} "$dst"    # bez -q: exfatprogs 1.2.0 (Clonezilla 3.1) ho nezná
     if [[ -n "$uuid" ]] && sys_have tune.exfat; then run tune.exfat -I "0x${uuid//-/}" "$dst"; fi
     tmp_mount "$src" ro; ms=$TMP_LAST
     tmp_mount "$dst" rw; md=$TMP_LAST
