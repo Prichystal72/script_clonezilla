@@ -2,13 +2,13 @@
 # Testy na loop discích se skutečnými daty (kap. 10.2).
 # Potřebuje Linux s rootem (WSL2 / VM). Pracuje JEN se soubory v $W – žádný skutečný disk.
 # Spuštění:  sudo bash test/test-loop.sh            (celé)
-#            sudo bash test/test-loop.sh legacy     (jen část: backup restore dryrun editor legacy merge multi clone)
+#            sudo bash test/test-loop.sh legacy     (jen část: backup restore dryrun editor legacy merge multi clone parts)
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 W=/var/tmp/restore-test
 R=(bash "$ROOT/restore.sh" --allow-loop --ui plain)
-PARTS="${1:-backup restore dryrun editor legacy merge multi clone}"
+PARTS="${1:-backup restore dryrun editor legacy merge multi clone parts}"
 PASS=0 FAIL=0 RUNNO=0
 
 [[ ${EUID:-$(id -u)} == 0 ]] || { echo "Spusť jako root (sudo)."; exit 2; }
@@ -529,6 +529,47 @@ check "klon FAT32: FS vyplňuje oddíl (df)" bash -c "mount -o ro ${CT}p1 $W/mnt
 check "klon FAT32: fsck.vfat čistý" fsck.vfat -n "${CT}p1"
 dropl "$CS"; dropl "$CT"
 fi
+# =============================================================================
+if [[ " $PARTS " == *" parts "* ]]; then
+echo "== 11) Menu 2: obnova vybraných oddílů do existujících oddílů (menších i větších)"
+for l in $(losetup -a | grep "$W/" | grep -v "images.img" | cut -d: -f1); do losetup -d "$l" 2>/dev/null; done
+mk2() { printf 'label: dos\nlabel-id: 0x2a2b2c2d\nunit: sectors\n\nstart=2048, size=6291456, type=c\nstart=6293504, type=7\n' | sfdisk -q "$1"; }
+mkloop PS parts-src 6G mk2
+mkfs.vfat -F32 -n DATA_A "${PS}p1" >/dev/null
+mkfs.ntfs -Q -q -L DATA_B "${PS}p2" 2>/dev/null
+mount "${PS}p1" "$W/mnt"; head -c 30M /dev/urandom >"$W/mnt/a.bin"; mkdir -p "$W/mnt/D"; for i in $(seq 30); do echo "$i" >"$W/mnt/D/f$i"; done; umount "$W/mnt"
+mount -t ntfs-3g "${PS}p2" "$W/mnt"; head -c 20M /dev/urandom >"$W/mnt/b.bin"; umount "$W/mnt"
+PA=$(fsums "${PS}p1"); PB=$(fsums "${PS}p2"); UA=$(fsuuid "${PS}p1"); UB=$(fsuuid "${PS}p2")
+rs parts-save --source-dev "$IMGP" --save-disk "${PS#/dev/}" --name PARTS2
+check "menu 2: záloha zdroje kód 0" [ "$RC" = 0 ] || showlog
+dropl "$PS"
+# cíl: p1 menší než zdrojový p1 (1 GiB < 3 GiB), p2 větší než zdrojový p2 (4 GiB > 3 GiB)
+mkt() { printf 'label: dos\nunit: sectors\n\nstart=2048, size=2097152, type=c\nstart=2099200, size=8388608, type=7\n' | sfdisk -q "$1"; }
+mkloop PT parts-dst 6G mkt
+mkfs.vfat -F32 -n STARY "${PT}p1" >/dev/null; mkfs.ntfs -Q -q -L STARY "${PT}p2" 2>/dev/null
+mount -o ro "${IMG}p1" "$W/mnt"
+pidx=$(cd "$W/mnt" && find . -maxdepth 3 -type f -name parts | sed 's|^\./||; s|/parts$||' | sort | grep -n '^PARTS2$' | cut -d: -f1)
+umount "$W/mnt"
+pt=${PT#/dev/}
+# 2 = menu 2, obraz, oddíly 1 2, cíl pro p1 = 1 (pt p1), potvrzení, cíl pro p2 = 2 (pt p2), potvrzení, další? n, konec
+STDIN="2\n${pidx}\n1 2\n1\n${pt}p1\n2\n${pt}p2\nn\n0\n"
+rs parts-restore --source-dev "$IMGP"
+STDIN=""
+check "menu 2: kód 0" [ "$RC" = 0 ] || showlog
+check "menu 2: tabulka cíle beze změny (p1 1 GiB, p2 4 GiB)" [ "$(psize "${PT}p1")/$(psize "${PT}p2")" = "$(( 2097152 * 512 ))/$(( 8388608 * 512 ))" ]
+check "menu 2: FAT32 do MENŠÍHO oddílu – soubory" [ "$(fsums "${PT}p1")" = "$PA" ]
+check "menu 2: FAT32 vyplňuje menší oddíl" fills "${PT}p1" $(( $(dd if="${PT}p1" bs=1 skip=32 count=4 status=none | od -An -tu4 | tr -d ' ') * 512 ))
+check "menu 2: FAT32 UUID" [ "$(fsuuid "${PT}p1")" = "$UA" ]
+check "menu 2: FAT32 fsck" fsck.vfat -n "${PT}p1"
+check "menu 2: FAT32 hidden sectors = začátek oddílu" [ "$(hidden "${PT}p1")" = 2048 ]
+check "menu 2: NTFS do VĚTŠÍHO oddílu – soubory" [ "$(fsums "${PT}p2")" = "$PB" ]
+check "menu 2: NTFS UUID" [ "$(fsuuid "${PT}p2")" = "$UB" ]
+check "menu 2: NTFS ntfsfix čistý" ntfsfix -n "${PT}p2"
+check "menu 2: NTFS hidden sectors = začátek oddílu" [ "$(hidden "${PT}p2")" = 2099200 ]
+check "menu 2: NTFS vyplňuje oddíl" bash -c "[ \$(( \$(blockdev --getsize64 ${PT}p2) - (\$(dd if=${PT}p2 bs=1 skip=40 count=8 status=none | od -An -tu8 | tr -d ' ') + 1) * 512 )) -lt 4194304 ]"
+dropl "$PT"
+fi
+
 echo
 echo "Výsledek: $PASS OK, $FAIL chyb   (logy: $W/logs)"
 (( FAIL == 0 ))

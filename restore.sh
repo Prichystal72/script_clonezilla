@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.2.10"
+readonly VERSION="1.2.11"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -2467,20 +2467,43 @@ restore_parts_pass() {
     for n in ${SRC[parts]}; do
         [[ -n "${SRC[$n.img]}" ]] && items+=("$n" "${SRC[$n.pname]} ${SRC[$n.fs]} $(human $(( SRC[$n.size] * SRC[sector] )))" off)
     done
-    ui_checklist "Oddíly k obnově" "Které oddíly obnovit?" "${items[@]}" || return 1
+    while true; do
+        ui_checklist "Oddíly k obnově" "Které oddíly obnovit? Označ MEZERNÍKEM (objeví se [*]), pak Potvrdit." "${items[@]}" && break
+        (( UI_EMPTY )) || return 1
+        ui_msg "Nic není označené. Najeď na oddíl, stiskni MEZERNÍK (objeví se [*]) a potom Potvrdit výběr."
+    done
     sel=$UI_REPLY
+    local dbytes sbytes dstart
     for n in $sel; do
-        part_select "Cíl pro ${SRC[$n.pname]} (${SRC[$n.fs]})" || return 1
+        part_select "Cíl pro ${SRC[$n.pname]} (${SRC[$n.fs]}, $(human $(( SRC[$n.size] * SRC[sector] ))))" || return 1
         dst=$UI_REPLY
         if (( BLK[$dst.SIZE] < ${SRC[$n.min]:-0} )); then
             warn "Oddíl $dst je menší než minimum $(human "${SRC[$n.min]}") – přeskakuji."
             continue
         fi
-        ui_confirm_disk "$dst" "$(printf 'Oddíl /dev/%s (%s, %s) bude přepsán obsahem %s.\n' "$dst" \
-            "${BLK[$dst.FSTYPE]:--}" "$(human "${BLK[$dst.SIZE]}")" "${SRC[$n.pname]}")" || continue
-        run_sh "$(restore_part_cmd SRC "$n" "/dev/$dst")"
-        (( SIMULATE || DRY_RUN )) && sim_progress "Obnova /dev/$dst"
-        (( BLK[$dst.SIZE] > SRC[$n.size] * SRC[sector] )) && fs_grow "${SRC[$n.fs]}" "/dev/$dst"
+        dbytes=${BLK[$dst.SIZE]} sbytes=$(( SRC[$n.size] * SRC[sector] ))
+        dstart=$(cat "/sys/class/block/$dst/start" 2>/dev/null || echo 0)
+        ui_confirm_disk "$dst" "$(printf 'Oddíl /dev/%s (%s, %s) bude přepsán obsahem %s (%s, %s).\n' "$dst" \
+            "${BLK[$dst.FSTYPE]:--}" "$(human "$dbytes")" "${SRC[$n.pname]}" "${SRC[$n.fs]}" "$(human "$sbytes")")" || continue
+        if (( dbytes < sbytes )); then
+            # menší cílový oddíl: stejně jako při obnově disku – dočasný soubor, zmenšení FS, kopie
+            NEW=()
+            # shellcheck disable=SC2034  # NEW čte restore_shrink_part přes nameref
+            NEW[sector]=${SRC[sector]} NEW[parts]=$n NEW[$n.size]=$(( dbytes / SRC[sector] )) NEW[$n.start]=$dstart NEW[$n.shrink]=1
+            restore_check_tmp SRC NEW
+            restore_shrink_part SRC NEW "$n" "/dev/$dst"
+        else
+            run_sh "$(restore_part_cmd SRC "$n" "/dev/$dst")"
+            (( SIMULATE || DRY_RUN )) && sim_progress "Obnova /dev/$dst"
+            if (( dbytes > sbytes )); then fs_grow "${SRC[$n.fs]}" "/dev/$dst" "$sbytes" "$dstart"; fi
+        fi
+        # oddíl je jinde než ve zdroji: boot sektor FAT/NTFS musí znát svůj začátek (hidden sectors)
+        if [[ "${SRC[$n.fs]}" == @(ntfs|vfat|fat*) ]] && (( dstart > 0 )); then
+            fix_hidden_sectors "/dev/$dst" "$dstart" "${SRC[$n.fs]}" 1
+        fi
+        [[ "${SRC[$n.fs]}" == ntfs ]] && ntfs_sync_backup_boot "/dev/$dst"
+        run sync
+        ok "Oddíl /dev/$dst obnoven z ${SRC[$n.pname]}."
     done
     return 0
 }

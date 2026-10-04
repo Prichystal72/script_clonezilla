@@ -1,6 +1,6 @@
 # TODO – co ještě nebylo vyzkoušeno a možné upgrady
 
-Stav k verzi 1.2.10 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací do 3 TB, 583 kontrol; ve VM s USB disky ověřen klon, záloha (1 i 2 disky) a sloučená obnova. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
+Stav k verzi 1.2.11 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací do 3 TB, 583 kontrol; ve VM s USB disky ověřen klon, záloha (1 i 2 disky) a sloučená obnova. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
 `test/test-sim.sh` (39 kontrol) a ručně ve VMware + Clonezilla 3.3.3-37 obnova záloh Beckhoff CF
 (1 karta i 2 karty → jeden SSD).
 
