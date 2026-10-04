@@ -79,7 +79,9 @@ fsbytes() {
 fills() { local p f tol; p=$(psize "$1"); f=$(fsbytes "$1"); tol=$(( p / 200 )); (( tol < 4194304 )) && tol=4194304; (( f <= p && p - f < tol )); }
 fsck_ok() {
     case "$(fstype "$1")" in
-        vfat)  fsck.vfat -n "$1" ;;
+        vfat)  # fsck.fat 4.2 hlásí jako chybu každý popisek s diakritikou (i z Windows) – jen tuto hlášku tolerovat
+               local o; o=$(fsck.vfat -n "$1" 2>&1) && return 0
+               ! grep -vE "^fsck.fat|Volume label .* is not valid|Auto-removing label|Leaving filesystem unchanged|files, .* clusters|^$" <<<"$o" | grep -q . ;;
         exfat) fsck.exfat -n "$1" ;;
         ntfs)  ntfsfix -n "$1" ;;
         ext*)  e2fsck -fn "$1" ;;
@@ -96,7 +98,20 @@ declare -A TYPE_GPT=([fat16]=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 [fat32]=EBD0A0
     [ext4]=0FC63DAF-8483-4772-8E79-3D69D8477DE4 [swap]=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F
     [efi]=C12A7328-F81F-11D2-BA4B-00A0C93EC93B [msr]=E3C9E316-0B5C-4DB8-817D-F92DF00215AE
     [rec]=DE94BBA4-06D1-4D40-A16A-BFD50179D6AC)
-SRC_FS=() SRC_SUM=() SRC_UUID=() SRC_LABELID=""
+SRC_FS=() SRC_SUM=() SRC_UUID=() SRC_LABELID="" SRC_FLABEL=()
+# Popisek jako z české Windows: "NOVŮ SVAZEK" v kódové stránce 852 (Ů = 0xDE) v boot sektoru i v kořenovém adresáři
+cz_label() {
+    local dev=$1 bits=$2 lo root bps res nf fsz
+    if (( bits == 32 )); then lo=71; else lo=43; fi
+    bps=$(u16 "$dev" 11); res=$(u16 "$dev" 14); nf=$(u8 "$dev" 16)
+    if (( bits == 32 )); then fsz=$(u32 "$dev" 36); root=$(( (res + nf * fsz + ($(u32 "$dev" 44) - 2) * $(u8 "$dev" 13)) * bps ))
+    else fsz=$(u16 "$dev" 22); root=$(( (res + nf * fsz) * bps )); fi
+    local lab; lab=$(printf 'NOV\xde SVAZEK')
+    printf '%s' "$lab" | dd of="$dev" bs=1 seek="$lo" conv=notrunc status=none
+    (( bits == 32 )) && printf '%s' "$lab" | dd of="$dev" bs=1 seek=$(( 6 * 512 + lo )) conv=notrunc status=none
+    printf '%s' "$lab" | dd of="$dev" bs=1 seek="$root" conv=notrunc status=none
+}
+flabel() { LC_ALL=C fatlabel "$1" 2>/dev/null | tail -n 1; }
 mksrc() {
     local -n _d=$1; local name=$2 size=$3 tbl=$4; shift 4
     local spec fs sz fl i=0 start line script p
@@ -120,8 +135,10 @@ mksrc() {
         IFS=: read -r fs sz fl <<<"$spec"
         i=$((i + 1)); p="${_d}p$i"; start=$(pstart "$p")
         case "$fs" in
-            fat16)     mkfs.fat -F 16 -n "F16_$i" "$p" >/dev/null ;;
-            fat32|efi) mkfs.fat -F 32 -n "F32_$i" "$p" >/dev/null ;;
+            fat16)     mkfs.fat -F 16 -n "F16_$i" "$p" >/dev/null
+                       [[ "$fl" == cz ]] && cz_label "$p" 16 ;;
+            fat32|efi) mkfs.fat -F 32 -n "F32_$i" "$p" >/dev/null
+                       [[ "$fl" == cz ]] && cz_label "$p" 32 ;;
             exfat)     mkfs.exfat -q -L "EXF_$i" "$p" >/dev/null ;;
             ntfs|rec)  mkfs.ntfs -Q -q -L "NTFS_$i" -p "$start" -H 255 -S 63 "$p" >/dev/null 2>&1 ;;
             ext4)      mkfs.ext4 -q -L "EXT_$i" "$p" ;;
@@ -138,7 +155,8 @@ mksrc() {
             umount "$m"
         fi
         if [[ "$fs" == msr ]]; then SRC_SUM[i]=""; SRC_UUID[i]=""; continue; fi
-        SRC_SUM[i]=$(fsums "$p"); SRC_UUID[i]=$(fsuuid "$p")
+        SRC_SUM[i]=$(fsums "$p"); SRC_UUID[i]=$(fsuuid "$p"); SRC_FLABEL[i]=""
+        [[ "$fs" == @(fat16|fat32|efi) ]] && SRC_FLABEL[i]=$(flabel "$p")
     done
     SRC_LABELID=$(sfdisk -d "$_d" 2>/dev/null | sed -n 's/^label-id: //p')
 }
@@ -157,11 +175,13 @@ verify() {
         fb=$(fsbytes "$p" 2>/dev/null); pb=$(psize "$p" 2>/dev/null)
         check "p$i FS vyplňuje oddíl ($(( ${fb:-0} / 1048576 )) z $(( ${pb:-0} / 1048576 )) MiB)" fills "$p"
         check "p$i UUID FS zachované" [ "$(fsuuid "$p")" = "${SRC_UUID[i]}" ]
+        [[ -n "${SRC_FLABEL[i]:-}" ]] && check "p$i popisek FAT zachovaný bajt po bajtu" [ "$(flabel "$p")" = "${SRC_FLABEL[i]}" ]
     done
     if [[ "$tbl" == dos63 ]]; then
         check "p1 začíná na sektoru 63" [ "$(pstart "${t}p1")" = 63 ]
         check "p1 bootovací" bash -c "sfdisk -d $t | grep -q '${t}p1 .*bootable'"
     fi
+    [[ "$tbl" == gpt ]] && check "GPT vč. zálohy na konci bez chyb (sgdisk -v)" bash -c "sgdisk -v $t | grep -q 'No problems found'"
     [[ "$tbl" != gpt ]] && check "disk signature zachovaná" [ "$(sfdisk -d "$t" 2>/dev/null | sed -n 's/^label-id: //p')" = "$SRC_LABELID" ]
     # FAT16/FAT12 má strop velikosti – disk se celý využít nedá
     if [[ "$mode" == last && " ${SRC_FS[*]} " != *" fat16 "* ]]; then
@@ -191,10 +211,12 @@ run_case() {
     mksrc S "src-$name" "$ssize" "$tbl" "$@" || { bad "příprava zdroje"; SUMMARY+=("✘ $name: příprava zdroje selhala"); return; }
     mkloop T "dst-$name" "$tsize"
     [[ "$sizes" != - ]] && extra=(--sizes "$sizes")
+    local imgp=$IMGP
+    [[ "$name" == fatimg-* ]] && imgp=$IMGP2
     if [[ "$op" == image ]]; then
-        rs "$name-save" --source-dev "$IMGP" --save-disk "${S#/dev/}" --name "M-$name"
+        rs "$name-save" --source-dev "$imgp" --save-disk "${S#/dev/}" --name "M-$name"
         check "záloha kód 0" [ "$RC" = 0 ]
-        rs "$name-restore" --source-dev "$IMGP" --image "M-$name" --target "${T#/dev/}" --mode "$mode" --yes-i-know "${T#/dev/}" "${extra[@]}"
+        rs "$name-restore" --source-dev "$imgp" --image "M-$name" --target "${T#/dev/}" --mode "$mode" --yes-i-know "${T#/dev/}" "${extra[@]}"
     else
         local in
         in="4\n$(didx "$S")\n$(didx "$T")\n${MODE_IDX[$mode]}\n"
@@ -222,6 +244,12 @@ mkloop IMG images 400G
 printf 'label: gpt\nunit: sectors\n\ntype=0FC63DAF-8483-4772-8E79-3D69D8477DE4\n' | sfdisk -q "$IMG"; rescan "$IMG"
 mkfs.ext4 -q -L IMAGES -E lazy_itable_init=1,lazy_journal_init=1 "${IMG}p1"
 IMGP=${IMG#/dev/}p1
+echo "== Druhý disk s obrazy: FAT32 (jako flashka z Windows) – případy fatimg-*"
+IMG2=""
+mkloop IMG2 images-fat 64G
+printf 'label: dos\nunit: sectors\n\nstart=2048, type=c\n' | sfdisk -q "$IMG2"; rescan "$IMG2"
+mkfs.fat -F 32 -n ZALOHY "${IMG2}p1" >/dev/null
+IMGP2=${IMG2#/dev/}p1
 
 # --- 1) flashka / jeden oddíl (MBR 1 MiB jako z Windows) -----------------------
 for fs in fat32 exfat ntfs ext4; do
@@ -234,6 +262,11 @@ for fs in fat32 exfat ntfs ext4; do
     run_case "usb-$fs-image-mbr-8G-3T"    image last  dos 8G 3T   0 - "$fs:rest"
 done
 run_case "usb-fat16-image-grow-1G-8G"   image last dos 1G 8G   0 - "fat16:rest"
+# český popisek z Windows (NOVŮ SVAZEK v CP852) – FAT se při změně velikosti vytváří znovu
+run_case "cz-fat32-image-shrink-16G-8G" image last dos 16G 8G 0 - "fat32:rest:cz"
+run_case "cz-fat32-clone-grow-8G-64G"   clone last dos 8G 64G 0 - "fat32:rest:cz"
+run_case "cz-fat16-image-grow-1G-4G"    image last dos 1G 4G  0 - "fat16:rest:cz"
+run_case "cz-dual-image-proportional"   image proportional dos 22G 15G 0 - "fat32:15G:cz" "fat32:rest"
 run_case "usb-fat16-clone-grow-1G-8G"   clone last dos 1G 8G   0 - "fat16:rest"
 run_case "usb-fat16-image-shrink-2G-1G" image last dos 2G 1G   0 - "fat16:rest"
 
@@ -263,6 +296,13 @@ run_case "win11-clone-64G-1T"     clone last gpt 64G 1T  0 - "efi:100M" "msr:16M
 run_case "linux-image-32G-3T"     image last gpt 32G 3T  0 - "efi:512M" "swap:1G" "ext4:rest"
 run_case "linux-image-3T-128G"    image last gpt 3T  128G 0 - "efi:512M" "swap:1G" "ext4:rest"
 run_case "linux-clone-32G-3T"     clone last gpt 32G 3T  0 - "efi:512M" "swap:1G" "ext4:rest"
+
+# --- 5b) zálohy na FAT32 (flashka z Windows): dočasná data nesmí jít na FAT (limit 4 GiB, bez řídkých souborů)
+run_case "fatimg-cz-dual-proportional"  image proportional dos 22G 15G 0 - "fat32:15G:cz" "fat32:rest"
+run_case "fatimg-fat32-shrink-16G-8G"   image last dos 16G 8G 0 - "fat32:rest"
+run_case "fatimg-fat32-grow-8G-64G"     image last dos 8G 64G 0 - "fat32:rest"
+run_case "fatimg-exfat-grow-8G-64G"     image last dos 8G 64G 0 - "exfat:rest"
+run_case "fatimg-ntfs-shrink-16G-8G"    image last dos 16G 8G 0 - "ntfs:rest"
 
 # --- 6) nevejde se → konec před zápisem -------------------------------------------
 # prázdný ext4 3 TB má ~50 GB metadat (tabulky inodů) – na 32 GB se bezpečně odmítne

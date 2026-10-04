@@ -35,7 +35,7 @@ echo "== Hlavní scénáře =="
 check "bigger: sken, připojení, růst ext4" bigger \
     '1\n2\n1\n1\n3\n1\nsdf\n0\n' 0 \
     'sdh1: /clonezilla/UBUNTU-2026-09' 'mount -o ro /dev/sdh1 /home/partimag' 'sdf2 : start=1050624, size=975722511' \
-    'resize2fs /dev/sdf2' 'sgdisk -e /dev/sdf' 'Hotovo' 'umount /home/partimag'
+    'resize2fs /dev/sdf2' 'sgdisk -v /dev/sdf' 'Hotovo' 'umount /home/partimag'
 check "bigger: chráněné disky nejdou vybrat" bigger \
     '1\n1\n1\n1\n2\n\n0\n' 0 \
     'nelze použít jako cíl: flashka s Clonezillou' 'nelze použít jako cíl: disk s obrazy' -- 'wipefs'

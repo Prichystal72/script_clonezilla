@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.2.7"
+readonly VERSION="1.2.10"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -130,8 +130,30 @@ run() {
     local rc=0
     "$@" || rc=$?
     _log_file "  -> návratový kód $rc"
-    (( rc == 0 )) && DONE_STEPS+=("$(_cmd_str "$@")")
+    if (( rc != 0 )); then
+        (( RUN_TRY )) && return "$rc"
+        die "$E_GEN" "Příkaz selhal (kód $rc): $(_cmd_str "$@") – další kroky se neprovedou."
+    fi
+    DONE_STEPS+=("$(_cmd_str "$@")")
+    return 0
+}
+
+# Příkaz, jehož chyba je očekávaná / ošetřená volajícím: run_try <příkaz…> (vrací kód, nezastaví)
+RUN_TRY=0
+run_try() {
+    local rc=0
+    RUN_TRY=1
+    run "$@" || rc=$?
+    RUN_TRY=0
     return "$rc"
+}
+
+# Příkaz s povolenými kódy: run_rc "0 1 2" <příkaz…> (např. e2fsck: 1 = chyby opraveny)
+run_rc() {
+    local ok=$1 rc=0; shift
+    run_try "$@" || rc=$?
+    [[ " $ok " == *" $rc "* ]] || die "$E_GEN" "Příkaz selhal (kód $rc): $(_cmd_str "$@") – další kroky se neprovedou."
+    return 0
 }
 
 # run_in <soubor> <příkaz…> – jako run, ale se stdin ze souboru
@@ -143,7 +165,9 @@ run_in() {
         return 0
     fi
     _log_file "\$ $(_cmd_str "$@") < $file"
-    "$@" <"$file"
+    local rc=0
+    "$@" <"$file" || rc=$?
+    (( rc == 0 )) || die "$E_GEN" "Příkaz selhal (kód $rc): $(_cmd_str "$@") – další kroky se neprovedou."
 }
 
 # run_sh "<roura>" – provede shellový řetězec (roury partclone apod.)
@@ -154,7 +178,12 @@ run_sh() {
         return 0
     fi
     _log_file "\$ $1"
-    bash -o pipefail -c "$1"
+    local rc=0
+    bash -o pipefail -c "$1" || rc=$?
+    if (( rc != 0 )); then
+        (( RUN_TRY )) && return "$rc"
+        die "$E_GEN" "Příkaz selhal (kód $rc): $1 – další kroky se neprovedou."
+    fi
 }
 
 # Pojistka: v simulaci zablokuje přímé volání zapisujících nástrojů mimo run
@@ -876,8 +905,8 @@ disk_umount_all() {
 disk_rescan() {
     local disk=$1 n p i maj min; shift
     if (( SIMULATE || DRY_RUN )); then
-        run partprobe "/dev/$disk"
-        run udevadm settle
+        run_try partprobe "/dev/$disk" || true
+        run_try udevadm settle || true
         return 0
     fi
     sync
@@ -1064,6 +1093,9 @@ src_select() {
         IMAGES_DISK=$(blk_parent "$cur")
         if [[ -n "$(img_find "$(partimag_dir)")" ]]; then
             info "Disk s obrazy už je připojený: /dev/$cur → $PARTIMAG_MP"
+            if [[ "$mode" == rw ]] && (( ! SIMULATE && ! DRY_RUN )) && findmnt -no OPTIONS "$PARTIMAG_MP" 2>/dev/null | grep -qw ro; then
+                mount -o remount,rw "$PARTIMAG_MP" || die "$E_GEN" "Disk s obrazy /dev/$cur nejde přepnout pro zápis."
+            fi
             return 0
         fi
         warn "$PARTIMAG_MP je připojený (/dev/$cur), ale neobsahuje žádné obrazy."
@@ -1637,6 +1669,9 @@ layout_to_sfdisk() {
     fi
     echo "device: /dev/$tgt"
     echo "unit: sectors"
+    # standardních 128 položek GPT: bez toho sfdisk při first-lba 2048 natáhne tabulku až k 2048. sektoru
+    # a záložní GPT na konci disku pak přesáhne do posledního oddílu
+    [[ "${_T[label]}" == gpt ]] && echo "table-length: 128"
     [[ "${_T[label]}" == gpt && -n "${_T[first_lba]:-}" ]] && echo "first-lba: ${_T[first_lba]}"
     [[ "${_T[label]}" == gpt ]] && echo "last-lba: ${_T[last_lba]}"
     echo "sector-size: ${_T[sector]}"
@@ -1777,7 +1812,7 @@ fs_grow() {
     local fs=$1 dev=$2 old=${3:-} start=${4:-} mp
     case "$fs" in
         ext2|ext3|ext4)
-            run e2fsck -fy "$dev"
+            run_rc "0 1 2" e2fsck -fy "$dev"
             run resize2fs "$dev" ;;
         ntfs)
             run ntfsresize --info --force --no-progress-bar "$dev"
@@ -1811,13 +1846,13 @@ fs_shrink() {
     local fs=$1 dev=$2 bytes=$3
     case "$fs" in
         ext2|ext3|ext4)
-            run e2fsck -fy "$dev"
+            run_rc "0 1 2" e2fsck -fy "$dev"
             run resize2fs "$dev" "$(( bytes / 1024 ))K" ;;
         ntfs)
             run ntfsresize --force --no-action -s "$bytes" "$dev"
             run_sh "echo y | ntfsresize --force --no-progress-bar -s $bytes $dev" ;;
         vfat|fat*)
-            if sys_have fatresize && run fatresize -s "$bytes" "$dev"; then return 0; fi
+            if sys_have fatresize && run_try fatresize -s "$bytes" "$dev"; then return 0; fi
             die "$E_GEN" "FAT na $dev nejde zmenšit na místě – použij obnovu z obrazu (kopie souborů)." ;;
         *)
             die "$E_USER" "FS '${fs:-?}' na $dev nelze zmenšit." ;;
@@ -1828,11 +1863,11 @@ fs_shrink() {
 fs_check() {
     local fs=$1 dev=$2 repair=${3:-0}
     case "$fs" in
-        ext2|ext3|ext4) if (( repair )); then run e2fsck -fy "$dev"; else run e2fsck -fn "$dev"; fi ;;
-        ntfs)           if (( repair )); then run ntfsfix "$dev"; else run ntfsfix -n "$dev"; fi ;;
-        vfat|fat*)      if (( repair )); then run fsck.vfat -a "$dev"; else run fsck.vfat -n "$dev"; fi ;;
-        xfs)            if (( repair )); then run xfs_repair "$dev"; else run xfs_repair -n "$dev"; fi ;;
-        btrfs)          if (( repair )); then run btrfs check --repair "$dev"; else run btrfs check --readonly "$dev"; fi ;;
+        ext2|ext3|ext4) if (( repair )); then run_try e2fsck -fy "$dev"; else run_try e2fsck -fn "$dev"; fi ;;
+        ntfs)           if (( repair )); then run_try ntfsfix "$dev"; else run_try ntfsfix -n "$dev"; fi ;;
+        vfat|fat*)      if (( repair )); then run_try fsck.vfat -a "$dev"; else run_try fsck.vfat -n "$dev"; fi ;;
+        xfs)            if (( repair )); then run_try xfs_repair "$dev"; else run_try xfs_repair -n "$dev"; fi ;;
+        btrfs)          if (( repair )); then run_try btrfs check --repair "$dev"; else run_try btrfs check --readonly "$dev"; fi ;;
         *)              warn "Pro FS '$fs' není kontrola k dispozici." ;;
     esac
 }
@@ -2058,7 +2093,9 @@ restore_execute() {
     layout_to_sfdisk "$2" >"$tbl"
     run_in "$tbl" sfdisk --wipe always --wipe-partitions always "/dev/$tgt"
     rm -f "$tbl"
-    if [[ "${_Y[label]}" == gpt ]]; then run sgdisk -e "/dev/$tgt"; fi
+    # záložní GPT na konec disku zapisuje sfdisk sám (last-lba); sgdisk -e se nevolá – u tabulky
+    # s first-lba 2048 chybně hlásí překryv s posledním oddílem. Jen kontrola, bez zápisu:
+    if [[ "${_Y[label]}" == gpt ]] && sys_have sgdisk; then run_try sgdisk -v "/dev/$tgt" || warn "sgdisk -v hlásí problém v GPT na /dev/$tgt – viz log."; fi
     if [[ "${_X[label]}" == dos ]]; then
         local mbr="${_X[dir]}/${_X[src_disk]}-mbr" hid="${_X[dir]}/${_X[src_disk]}-hidden-data-after-mbr"
         [[ -r "$mbr" ]] && run dd if="$mbr" of="/dev/$tgt" bs=446 count=1 conv=notrunc status=none
@@ -3040,12 +3077,19 @@ menu_avail() {
 # Spuštění akce menu v subshellu: chyba (die) ukončí jen akci, ne celý skript
 menu_action() {
     local rc=0
-    ( trap action_cleanup EXIT; "$@" ) || rc=$?
+    # každá akce začíná bez varování z předchozích akcí (souhrn ukazuje jen svoje)
+    ( WARNINGS=(); trap action_cleanup EXIT; "$@" ) || rc=$?
     case "$rc" in
         0) ;;
-        "$E_SPACE") warn "Akce skončila: nedostatek místa (kód $rc)." ;;
-        *) warn "Akce skončila s kódem $rc." ;;
+        "$E_USER") info "Akce zrušena." ;;
+        "$E_SPACE") err "Akce skončila: nedostatek místa (kód $rc)." ;;
+        *) err "Akce skončila s chybou (kód $rc) – podrobnosti v logu $LOG_FILE." ;;
     esac
+    # disk se zálohami po akci jen pro čtení: data jsou na disku a odpojení / vypnutí VM je bezpečné
+    if (( ! SIMULATE && ! DRY_RUN )) && findmnt -no OPTIONS "$PARTIMAG_MP" 2>/dev/null | grep -qw rw; then
+        sync
+        mount -o remount,ro "$PARTIMAG_MP" 2>/dev/null || true
+    fi
     ui_pause
     blk_load
     live_detect
@@ -3239,8 +3283,22 @@ fs_min_bytes() {
 }
 
 # Adresář pro dočasné soubory (u disku s obrazy přepojí pro zápis)
+# Kam s dočasnými soubory (řídké obrazy oddílů): --tmpdir, jinak disk s obrazy – ale ne FAT/exFAT
+# (FAT pojme soubor jen do 4 GiB, ani jeden neumí řídké soubory) a ne nepřipojený adresář; pak paměť (/tmp)
+tmp_base() {
+    local fs
+    if [[ -n "$OPT_TMPDIR" ]]; then echo "$OPT_TMPDIR"; return 0; fi
+    if (( SIMULATE )); then echo "$PARTIMAG_MP"; return 0; fi
+    fs=$(findmnt -no FSTYPE "$PARTIMAG_MP" 2>/dev/null || true)
+    if [[ -z "$fs" || "$fs" == @(vfat|msdos|exfat) ]]; then echo "/tmp"; else echo "$PARTIMAG_MP"; fi
+}
+
 tmp_workdir() {
-    local d=${OPT_TMPDIR:-$PARTIMAG_MP}
+    local d
+    d=$(tmp_base)
+    if [[ "$d" == /tmp && -z "$OPT_TMPDIR" ]]; then
+        info "Dočasná data se uloží do paměti (/tmp) – disk se zálohami je FAT/exFAT nebo není připojený." >&2
+    fi
     if [[ "$d" == "$PARTIMAG_MP" && -z "$OPT_TMPDIR" ]]; then
         if (( ! SIMULATE && ! DRY_RUN )) && findmnt -no OPTIONS "$PARTIMAG_MP" 2>/dev/null | grep -qw ro; then
             info "Disk s obrazy se pro dočasný soubor přepojí pro zápis." >&2
@@ -3314,6 +3372,42 @@ fs_exfat_copy() {
     info "exFAT na $dst vytvořen znovu přes celý oddíl (label ${label:--}, sériové číslo $uuid), soubory zkopírovány."
 }
 
+# Číslo z boot sektoru (little endian): bpb <zařízení> <offset> <bajtů>
+bpb() { dd if="$1" bs=1 skip="$2" count="$3" status=none 2>/dev/null | od -An -tu"$3" | tr -d ' '; }
+
+# Bajtová pozice kořenového adresáře FAT: fat_root_off <zařízení> <12|16|32>
+fat_root_off() {
+    local dev=$1 bits=$2 bps res nf fsz
+    bps=$(bpb "$dev" 11 2); res=$(bpb "$dev" 14 2); nf=$(bpb "$dev" 16 1)
+    if (( bits == 32 )); then
+        fsz=$(bpb "$dev" 36 4)
+        echo $(( (res + nf * fsz + ( $(bpb "$dev" 44 4) - 2 ) * $(bpb "$dev" 13 1)) * bps ))
+    else
+        fsz=$(bpb "$dev" 22 2)
+        echo $(( (res + nf * fsz) * bps ))
+    fi
+}
+
+# Popisek FAT bajt po bajtu ze zdroje do nového (prázdného) FS: boot sektor + záznam v kořenovém adresáři
+# (ten zobrazují Windows). Bez převodu znaků – diakritika v kódové stránce Windows zůstane přesně.
+fat_label_copy() {
+    local src=$1 dst=$2 bits=$3 lo sroot droot e off
+    if (( SIMULATE || DRY_RUN )); then _show_cmd "kopie popisku FAT $src → $dst (boot sektor + kořenový adresář)"; return 0; fi
+    if (( bits == 32 )); then lo=71; else lo=43; fi
+    dd if="$src" of="$dst" bs=1 skip="$lo" seek="$lo" count=11 conv=notrunc status=none
+    (( bits == 32 )) && dd if="$src" of="$dst" bs=1 skip=$(( 6 * 512 + lo )) seek=$(( 6 * 512 + lo )) count=11 conv=notrunc status=none
+    # záznam s atributem 0x08 (popisek svazku) v prvních 128 položkách kořenového adresáře zdroje
+    sroot=$(fat_root_off "$src" "$bits"); droot=$(fat_root_off "$dst" "$bits")
+    [[ "$sroot" =~ ^[0-9]+$ && "$droot" =~ ^[0-9]+$ ]] || return 0
+    e=$(dd if="$src" bs=1 skip="$sroot" count=4096 status=none 2>/dev/null | od -An -v -tu1 -w32 |
+        awk '{ if ($1 != 0 && $1 != 229 && $12 == 8) { print NR - 1; exit } }')
+    [[ -n "$e" ]] || return 0
+    off=$(( sroot + e * 32 ))
+    # nový FS má kořenový adresář prázdný → popisek do první položky (jméno + atribut, ostatní nuly)
+    dd if="$src" of="$dst" bs=1 skip="$off" seek="$droot" count=12 conv=notrunc status=none
+    _log_file "popisek FAT zkopírován z $src (položka $e) do $dst"
+}
+
 # fs_fat_copy <zdroj> <cíl> <začátek_oddílu_cíle>
 fs_fat_copy() {
     local src=$1 dst=$2 start=$3 uuid id label ver bits off cnt ms md
@@ -3326,7 +3420,9 @@ fs_fat_copy() {
     fi
     id=${uuid//-/}
     bits=${ver#FAT}; [[ "$bits" == @(12|16|32) ]] || bits=32
-    run mkfs.fat -F "$bits" -i "$id" ${label:+-n "$label"} -h "$start" "$dst"
+    # FAT bez popisku – popisek (i s diakritikou v kódové stránce Windows) se zkopíruje bajt po bajtu
+    run mkfs.fat -F "$bits" ${id:+-i "$id"} -h "$start" "$dst"
+    fat_label_copy "$src" "$dst" "$bits"
     # boot kód zavaděče (CE/DOS) z původního boot sektoru; BPB nového FS zůstává
     if (( bits == 32 )); then off=90; cnt=420; else off=62; cnt=448; fi
     run dd if="$src" of="$dst" bs=1 skip="$off" seek="$off" count="$cnt" conv=notrunc status=none
@@ -3384,7 +3480,7 @@ restore_check_tmp() {
         fi
     done
     (( needb )) || return 0
-    tdir=${OPT_TMPDIR:-$PARTIMAG_MP}
+    tdir=$(tmp_base)
     if (( SIMULATE )); then info "Zmenšení potřebuje cca $(human "$needb") dočasného místa v $tdir."; return 0; fi
     avail=$(df -B1 --output=avail "$tdir" 2>/dev/null | tail -1 | tr -d ' ')
     info "Změna velikosti potřebuje cca $(human "$needb") dočasného místa v $tdir (volno $(human "${avail:-0}"))."
