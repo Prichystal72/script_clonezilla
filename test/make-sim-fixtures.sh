@@ -264,5 +264,22 @@ image_add_disk sdb 3909744 \
     "label: dos" "label-id: 0x1a2b3c4d" "device: /dev/sdb" "unit: sectors" "sector-size: 512"
 image_part 1 "start=63, size=3909681, type=7" \
     ntfs ptcl gz $(( 3909681 * 512 )) $(( 600 * 1048576 )) DATA 7C6B5A4938271605
+# =============================================================================
+# twodisks – dva zdrojové disky k záloze (sdb: 2 oddíly, sdc: 1 oddíl) + prázdný disk sdf
+# =============================================================================
+scenario twodisks "záloha více disků / oddílů: sdb (ext4 + NTFS), sdc (ext4), prázdný sdf, disk s obrazy sdh1"
+images_disk sdh ext4 ZALOHY ""
+blk sdb "" disk 128035676160 "" "" "" "Source A 128GB" SN-sdb-0001 sata 0 0 ""
+target_dump sdb "label: dos" "label-id: 0x11111111" "device: /dev/sdb" "unit: sectors" "sector-size: 512" "" \
+    "/dev/sdb1 : start=2048, size=204800, type=83" \
+    "/dev/sdb2 : start=206848, size=249811200, type=7"
+blk sdb1 sdb part 104857600 ext4 BOOT 5b1c2d3e-0001-4a5b-8c6d-7e8f90a1b2c3 "" "" sata 0 0 ""
+blk sdb2 sdb part 127902105600 ntfs DATA 4E5A6B7C8D9E0F11 "" "" sata 0 0 ""
+blk sdc "" disk 64023257088 "" "" "" "Source B 64GB" SN-sdc-0001 sata 0 0 ""
+target_dump sdc "label: dos" "label-id: 0x22222222" "device: /dev/sdc" "unit: sectors" "sector-size: 512" "" \
+    "/dev/sdc1 : start=2048, size=125000000, type=83"
+blk sdc1 sdc part 64000000000 ext4 ROOT 5b1c2d3e-0002-4a5b-8c6d-7e8f90a1b2c3 "" "" sata 0 0 ""
+target sdf 976773168 "Samsung SSD 870 EVO 500GB" sata 0
+
 echo "Fixtures vytvořeny v $SIM:"
 ls "$SIM"

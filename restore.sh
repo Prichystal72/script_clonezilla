@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.7"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -31,10 +31,12 @@ UI_BACKEND=""         # dialog | whiptail | plain (prázdné = automaticky)
 OPT_IMAGE="" OPT_SOURCE_DEV="" OPT_TARGET="" OPT_MODE="" OPT_TMPDIR=""
 OPT_YES="" OPT_NO_EFI_FIX=0 OPT_LOG="" OPT_NEW_GUID=0
 OPT_RESIZE="" OPT_SIZE="" OPT_MOVE="" OPT_START="" OPT_EDIT=""
-OPT_NAME="" OPT_SAVE=""   # --save-disk / --save-part, --name
+OPT_NAME="" OPT_SEPARATE=0   # --name, --separate (každá položka zálohy do samostatného obrazu)
+OPT_SAVE_DISKS=() OPT_SAVE_PARTS=()   # --save-disk sda,sdb  --save-part sda1,sdb2
+OPT_GROUPS=""        # --groups "sda+sdb,sdc": které zdroje obnovit na který cíl
 OPT_SOURCE_DISK=""   # --source-disk sda[,sdb]: které disky z vícediskové zálohy obnovit
 OPT_SIZES=""         # --sizes 20G,max: velikosti oddílů pro režim C (manual)
-MERGE_DISKS=()
+IMG_DIRS=() UNITS=()   # vybrané obrazy a zdroje obnovy "adresář|disk"
 KEYMAP_WANT="cz" KEYMAP_CUR=""   # --keymap cz|us|keep
 LAST_TARGET="" RESTORE_USED_TARGETS=()
 ALLOW_LOOP=0          # --allow-loop: loop zařízení jako disky (jen pro testy)
@@ -321,6 +323,9 @@ Obnova:         restore.sh [--source-dev /dev/sdh1] --image DIR --target sdf
 Editor:         restore.sh --resize sdf2 --size 200G|+50G|-20G|max|60%
                 restore.sh --move sdf3 --start end|<MiB>
                 restore.sh --edit sdf
+Záloha:         restore.sh --save-disk sda[,sdb…] [--save-part sda1[,sdb2…]] [--name NÁZEV] [--separate]
+                (vše do jednoho obrazu, s --separate každá položka do vlastního)
+Víc zdrojů:     --image A,B  --source-disk sda,B:sdb  --groups "sda+B:sdb,sdc"  --target sdf,sdg
 Informace:      restore.sh --list-images [DIR] | --list-disks | --info IMAGE
 Simulace:       restore.sh --simulate[=SCÉNÁŘ]   (scénáře: $(sim_list | tr '\n' ' '))
 Ostatní:        --ui dialog|whiptail|plain  --help  --version
@@ -337,17 +342,19 @@ parse_args() {
             --dry-run)       DRY_RUN=1 ;;
             --image)         OPT_IMAGE=${2:?chybí cesta}; shift; [[ "$ACTION" == menu ]] && ACTION=restore ;;
             --source-dev)    OPT_SOURCE_DEV=${2:?chybí zařízení}; shift ;;
-            --target)        OPT_TARGET=${2:?chybí disk}; OPT_TARGET=${OPT_TARGET#/dev/}; shift ;;
+            --target)        OPT_TARGET=${2:?chybí disk}; OPT_TARGET=${OPT_TARGET//\/dev\//}; shift ;;
             --mode)          OPT_MODE=${2:?chybí režim}; shift ;;
             --tmpdir)        OPT_TMPDIR=${2:?chybí adresář}; shift ;;
-            --yes-i-know)    OPT_YES=${2:?chybí název disku}; OPT_YES=${OPT_YES#/dev/}; shift ;;
+            --yes-i-know)    OPT_YES=${2:?chybí název disku}; OPT_YES=${OPT_YES//\/dev\//}; shift ;;
             --no-efi-fix)    OPT_NO_EFI_FIX=1 ;;
             --new-guid)      OPT_NEW_GUID=1 ;;
             --log)           OPT_LOG=${2:?chybí soubor}; shift ;;
             --ui)            UI_BACKEND=${2:?chybí backend}; shift ;;
             --allow-loop)    ALLOW_LOOP=1 ;;
-            --save-disk)     ACTION="save-disk"; OPT_SAVE=${2:?chybí disk}; OPT_SAVE=${OPT_SAVE#/dev/}; shift ;;
-            --save-part)     ACTION="save-part"; OPT_SAVE=${2:?chybí oddíl}; OPT_SAVE=${OPT_SAVE#/dev/}; shift ;;
+            --save-disk)     ACTION="save"; IFS=, read -ra _l <<<"${2:?chybí disk}"; OPT_SAVE_DISKS+=("${_l[@]#/dev/}"); shift ;;
+            --save-part)     ACTION="save"; IFS=, read -ra _l <<<"${2:?chybí oddíl}"; OPT_SAVE_PARTS+=("${_l[@]#/dev/}"); shift ;;
+            --separate)      OPT_SEPARATE=1 ;;
+            --groups)        OPT_GROUPS=${2:?chybí skupiny}; shift ;;
             --name)          OPT_NAME=${2:?chybí název}; shift ;;
             --source-disk)   OPT_SOURCE_DISK=${2:?chybí disk}; shift ;;
             --sizes)         OPT_SIZES=${2:?chybí velikosti}; shift ;;
@@ -484,6 +491,9 @@ align_down() { local s=$1 a=$(( MiB / ${2:-512} )); echo $(( s / a * a )); }
 # UI – dialog → whiptail → čistý text (výsledek v UI_REPLY)
 # =============================================================================
 UI_REPLY=""
+UI_DEFAULT=""   # předvolená položka příští nabídky (tag)
+UI_EMPTY=0      # ui_checklist: potvrzeno, ale nic neoznačeno
+SRC_EXCLUDE=""  # oddíly, které se nesmí nabídnout jako místo pro obrazy (právě se zálohují)
 
 ui_init() {
     if [[ -z "$UI_BACKEND" ]]; then
@@ -494,6 +504,36 @@ ui_init() {
     if [[ "$UI_BACKEND" != plain ]] && ! command -v "$UI_BACKEND" >/dev/null 2>&1; then
         UI_BACKEND=plain
     fi
+    ui_make_themes
+}
+
+# Barevná témata oken: zelená = ZDROJ (odkud se čte), červená = CÍL (kam se zapisuje), jinak výchozí.
+UI_THEME=default UI_TC=""
+ui_make_themes() {
+    local c up rc="${STATE_DIR:-/tmp}/dialogrc-base"
+    [[ "$UI_BACKEND" == dialog ]] || return 0
+    dialog --create-rc "$rc" 2>/dev/null || return 0
+    for c in green red; do
+        up=${c^^}
+        sed -E "s/BLUE/$up/g; s/^screen_color = .*/screen_color = (WHITE,$up,ON)/; s/^title_color = .*/title_color = (WHITE,$up,ON)/" "$rc" >"${STATE_DIR:-/tmp}/dialogrc-$c"
+    done
+}
+
+# ui_theme <green|red|default>
+ui_theme() {
+    UI_THEME=${1:-default}
+    case "$UI_THEME" in green) UI_TC=$C_GRN ;; red) UI_TC=$C_RED ;; *) UI_TC="" ;; esac
+    case "$UI_BACKEND" in
+        dialog)
+            if [[ "$UI_THEME" == default || ! -s "${STATE_DIR:-/tmp}/dialogrc-$UI_THEME" ]]; then unset DIALOGRC
+            else export DIALOGRC="${STATE_DIR:-/tmp}/dialogrc-$UI_THEME"; fi ;;
+        whiptail)
+            case "$UI_THEME" in
+                green) export NEWT_COLORS='root=white,green title=green,white actbutton=white,green actlistbox=white,green actsellistbox=white,green' ;;
+                red)   export NEWT_COLORS='root=white,red title=red,white actbutton=white,red actlistbox=white,red actsellistbox=white,red' ;;
+                *)     unset NEWT_COLORS ;;
+            esac ;;
+    esac
 }
 
 # Čtení řádku v textovém režimu; konec vstupu = ukončení (ochrana proti smyčce)
@@ -508,7 +548,11 @@ _ui_read() {
 
 # Horní řádek obrazovky: kde jsem + nápověda ovládání
 UI_STEP=""
-_bt() { printf 'restore.sh %s%s%s   |   číslo/šipky = výběr · Enter = OK · Esc = zpět' "$VERSION" "${UI_STEP:+  ›  }" "$UI_STEP"; }
+_bt() {
+    local tag=""
+    case "$UI_THEME" in green) tag="[ZDROJ] " ;; red) tag="[CÍL – ZÁPIS] " ;; esac
+    printf '%srestore.sh %s%s%s   |   číslo/šipky = výběr · Enter = OK · Esc = zpět' "$tag" "$VERSION" "${UI_STEP:+  ›  }" "$UI_STEP"
+}
 ui_step() { UI_STEP="${UI_BASE}${UI_BASE:+  ›  }$1"; }
 UI_BASE=""
 
@@ -528,11 +572,20 @@ ui_menu() {
     done
     case "$UI_BACKEND" in
         dialog)
-            UI_REPLY=$(dialog --clear --backtitle "$(_bt)" --title "$title" --ok-label "Vybrat" --cancel-label "< Zpět" --menu "$text" 0 0 0 "${items[@]}" 3>&1 1>&2 2>&3) || return 1 ;;
+            local mh=$(( ${#items[@]} / 2 )) defarg=()
+            (( mh > 18 )) && mh=18
+            if [[ -n "${UI_DEFAULT:-}" ]]; then
+                for i in "${!tags[@]}"; do
+                    if [[ "${tags[i]}" == "$UI_DEFAULT" ]]; then
+                        if (( numeric )); then defarg=(--default-item "${tags[i]}"); else defarg=(--default-item "$(( i + 1 ))"); fi
+                    fi
+                done
+            fi
+            UI_REPLY=$(dialog --clear --backtitle "$(_bt)" --title "$title" "${defarg[@]}" --ok-label "Vybrat" --cancel-label "< Zpět" --menu "$text" 0 0 "$mh" "${items[@]}" 3>&1 1>&2 2>&3) || { UI_DEFAULT=""; return 1; } ;;
         whiptail)
             UI_REPLY=$(whiptail --backtitle "$(_bt)" --title "$title" --ok-button "Vybrat" --cancel-button "< Zpět" --menu "$text" 24 90 16 "${items[@]}" 3>&1 1>&2 2>&3) || return 1 ;;
         *)
-            printf '\n%s\n' "${C_BLD}=== $title ===${C_OFF}"
+            printf '\n%s\n' "${C_BLD}${UI_TC:-}=== $title ===${C_OFF}"
             [[ -n "$text" ]] && printf '%s\n' "$text"
             for (( i = 0; i < ${#items[@]}; i += 2 )); do printf '  %3s) %s\n' "${items[i]}" "${items[i+1]}"; done
             while true; do
@@ -544,6 +597,7 @@ ui_menu() {
                 echo "Neplatná volba – zadej číslo z nabídky."
             done ;;
     esac
+    UI_DEFAULT=""
     (( numeric )) || UI_REPLY=${tags[UI_REPLY - 1]}
     _log_file "  volba: $UI_REPLY"
     return 0
@@ -552,6 +606,7 @@ ui_menu() {
 # ui_checklist <titulek> <text> <tag> <popis> <on|off>…; výsledek "tag1 tag2" (volí se čísly)
 ui_checklist() {
     local title=$1 text=$2; shift 2
+    UI_EMPTY=0
     local -a tags=() items=() defs=()
     local i x out=""
     while (( $# >= 3 )); do
@@ -563,11 +618,11 @@ ui_checklist() {
     case "$UI_BACKEND" in
         dialog)
             UI_REPLY=$(dialog --backtitle "$(_bt)" --title "$title" --ok-label "Potvrdit výběr" --cancel-label "< Zpět" --separate-output --checklist "$text
-(mezerník = označit/odznačit)" 0 0 0 "${items[@]}" 3>&1 1>&2 2>&3) || return 1 ;;
+(mezerník = označit/odznačit)" 0 0 "$(( ${#tags[@]} > 18 ? 18 : ${#tags[@]} ))" "${items[@]}" 3>&1 1>&2 2>&3) || return 1 ;;
         whiptail)
             UI_REPLY=$(whiptail --backtitle "$(_bt)" --title "$title" --ok-button "Potvrdit výběr" --cancel-button "< Zpět" --separate-output --checklist "$text" 24 90 16 "${items[@]}" 3>&1 1>&2 2>&3) || return 1 ;;
         *)
-            printf '\n%s\n%s\n' "${C_BLD}=== $title ===${C_OFF}" "$text"
+            printf '\n%s\n%s\n' "${C_BLD}${UI_TC:-}=== $title ===${C_OFF}" "$text"
             for (( i = 0; i < ${#items[@]}; i += 3 )); do
                 printf '  %3s) %s %s\n' "${items[i]}" "${items[i+1]}" "$([[ "${items[i+2]}" == on ]] && echo '[x]' || echo '[ ]')"
             done
@@ -580,7 +635,8 @@ ui_checklist() {
         out+="${out:+ }${tags[x - 1]}"
     done
     UI_REPLY=$out
-    [[ -n "$UI_REPLY" ]]
+    if [[ -z "$UI_REPLY" ]]; then UI_EMPTY=1; return 1; fi
+    UI_EMPTY=0
 }
 
 # ui_yesno <text> [výchozí a|n]; 0 = ano
@@ -665,10 +721,11 @@ ui_gauge() {
 
 # ui_confirm_disk <disk> <souhrn> – potvrzení opsáním názvu disku (kap. 4)
 ui_confirm_disk() {
+    ui_theme red
     local disk=$1 summary=$2
     printf '%s\n' "$summary" | ui_text "Souhrn před zápisem"
     if [[ -n "$OPT_YES" ]]; then
-        if [[ "$OPT_YES" == "$disk" ]]; then info "Potvrzeno parametrem --yes-i-know $disk"; return 0; fi
+        if [[ ",$OPT_YES," == *",$disk,"* ]]; then info "Potvrzeno parametrem --yes-i-know $disk"; return 0; fi
         die "$E_USER" "--yes-i-know '$OPT_YES' neodpovídá cílovému disku '$disk'"
     fi
     local warnline="!!! VŠECHNA DATA NA /dev/$disk BUDOU ZNIČENA !!!"
@@ -729,6 +786,7 @@ disk_protect_reason() {
     # Testovací režim: cílem smí být jen loop soubor, žádný skutečný disk
     if (( ALLOW_LOOP )) && [[ "$d" != loop* ]]; then echo "testovací režim – jen loop zařízení"; return 0; fi
     if [[ -n "$LIVE_DISK" && "$d" == "$LIVE_DISK" ]]; then echo "flashka s Clonezillou"; return 0; fi
+    if [[ -n "${CLONE_SRC:-}" && "$d" == "$CLONE_SRC" ]]; then echo "zdroj klonu"; return 0; fi
     if [[ -n "$IMAGES_DISK" && "$d" == "$IMAGES_DISK" ]]; then echo "disk s obrazy"; return 0; fi
     mp=${BLK[$d.MOUNTPOINT]:-}
     if [[ -n "$mp" ]]; then echo "připojeno: $d → $mp"; return 0; fi
@@ -767,6 +825,7 @@ disk_table() {
 
 # Výběr cílového disku; výsledek v UI_REPLY. Chráněné disky nelze vybrat.
 disk_select_target() {
+    ui_theme red
     local title=${1:-"Cílový disk"} d why items=()
     disk_table | ui_text "Disky"
     for d in $(disk_all); do
@@ -778,6 +837,8 @@ disk_select_target() {
     done
     (( ${#items[@]} )) || die "$E_GEN" "Nenalezen žádný disk."
     while true; do
+        UI_DEFAULT=""
+        for d in $(disk_all); do disk_protect_reason "$d" >/dev/null || { UI_DEFAULT=$d; break; }; done
         ui_menu "$title" "Vyber cílový disk (chráněné nelze použít):" "${items[@]}" || return 1
         d=$UI_REPLY
         if why=$(disk_protect_reason "$d"); then
@@ -981,7 +1042,13 @@ src_scan() {
 
 # Interaktivní výběr disku s obrazy (kap. 5.0); mode ro|rw
 src_select() {
-    local mode=${1:-ro} cur n items=()
+    local mode=${1:-ro} cur n items=() title="Disk s obrazy" text="Vyber oddíl, na kterém jsou obrazy Clonezilly:"
+    if [[ "$mode" == rw ]]; then
+        ui_theme red
+        title="Kam uložit zálohu" text="Vyber oddíl, kam se záloha uloží (složka se zálohou se na něm vytvoří):"
+    else
+        ui_theme green
+    fi
     if [[ -n "$OPT_SOURCE_DEV" ]]; then
         n=${OPT_SOURCE_DEV#/dev/}
         [[ -n "${BLK[$n.TYPE]:-}" ]] || die "$E_USER" "Zařízení $OPT_SOURCE_DEV neexistuje."
@@ -989,6 +1056,9 @@ src_select() {
         return 0
     fi
     cur=$(src_find_mounted)
+    if [[ -n "$cur" && " $SRC_EXCLUDE " == *" $cur "* ]]; then
+        die "$E_USER" "Disk s obrazy (/dev/$cur) je zároveň mezi zálohovanými položkami – zálohu nelze uložit sama do sebe."
+    fi
     if [[ -n "$cur" ]]; then
         IMAGES_PART=$cur
         IMAGES_DISK=$(blk_parent "$cur")
@@ -1001,10 +1071,14 @@ src_select() {
     while true; do
         items=()
         for n in $(src_candidates); do
+            [[ " $SRC_EXCLUDE " == *" $n "* ]] && continue
+            # pro zápis ne oddíl připojený jinde (např. disk se skriptem)
+            [[ "$mode" == rw && -n "${BLK[$n.MOUNTPOINT]:-}" && "${BLK[$n.MOUNTPOINT]}" != "$PARTIMAG_MP" ]] && continue
             items+=("$n" "$n  $(human "${BLK[$n.SIZE]:-0}") ${BLK[$n.FSTYPE]:-} ${BLK[$n.LABEL]:-} (${BLK[$(blk_parent "$n").MODEL]:-})")
         done
-        items+=(scan "Automaticky prohledat všechny oddíly (read-only)")
-        ui_menu "Disk s obrazy" "Vyber oddíl, na kterém jsou obrazy Clonezilly:" "${items[@]}" || return 1
+        [[ "$mode" == rw ]] || items+=(scan "Automaticky prohledat všechny oddíly (read-only)")
+        (( ${#items[@]} )) || { ui_msg "Není kam uložit zálohu – žádný jiný oddíl se souborovým systémem."; return 1; }
+        ui_menu "$title" "$text" "${items[@]}" || return 1
         if [[ "$UI_REPLY" == scan ]]; then
             local res
             res=$(src_scan)
@@ -1124,6 +1198,7 @@ img_size() {
 #   [n.pname] [n.fs] [n.fsuuid] [n.label] [n.img] [n.imgtype] [n.comp] (z obrazu)
 #   [n.fssize] [n.used] [n.min] (bajty)  [n.role] [n.class]=grow|fixed
 # =============================================================================
+# shellcheck disable=SC2034  # NEW se plní přes nameref (layout_compute)
 declare -A SRC=() NEW=()
 
 # Načte výstup sfdisk --dump ze stdin do pole
@@ -1197,6 +1272,7 @@ img_load() {
     for n in ${_I[parts]}; do
         pname=$(part_name "$disk" "$n")
         _I[$n.pname]=$pname
+        _I[$n.dir]=$dir
         _I[$n.fs]="" _I[$n.img]="" _I[$n.imgtype]="" _I[$n.comp]="" _I[$n.used]="" _I[$n.fssize]=""
         mapfile -t files < <(img_datafiles "$dir" "$pname")
         if (( ${#files[@]} )) && parsed=$(img_parse_name "${files[0]}" "$pname"); then
@@ -1206,6 +1282,16 @@ img_load() {
             _I[$n.img]=$(printf '%s\n' "${files[@]##*/}" | tr '\n' ' ')
         fi
         [[ -z "${_I[$n.fs]}" ]] && _I[$n.fs]=$(img_blkid "$dir" "$pname" TYPE)
+        _I[$n.fatbits]=""
+        if [[ "${_I[$n.fs]}" == @(vfat|fat*) ]]; then
+            if [[ "${_I[$n.type]^^}" == @(1|11) ]]; then
+                _I[$n.fatbits]=12
+            elif [[ "$(img_blkid "$dir" "$pname" SEC_TYPE)" == msdos || "${_I[$n.fs]}" == fat16 || "${_I[$n.type]^^}" == @(4|6|E|14|16|1E) ]]; then
+                _I[$n.fatbits]=16
+            else
+                _I[$n.fatbits]=32
+            fi
+        fi
         _I[$n.fsuuid]=$(img_blkid "$dir" "$pname" UUID)
         _I[$n.label]=$(img_blkid "$dir" "$pname" LABEL)
         f="$dir/swappt-$pname.info"
@@ -1231,6 +1317,16 @@ img_verify() {
         if [[ " ${_V[parts]} " != *" $n "* ]]; then err "Oddíl $p z 'parts' chybí v tabulce oddílů disku ${_V[src_disk]}."; bad=1; continue; fi
         if [[ -z "${_V[$n.img]}" && "${_V[$n.fs]}" != swap && -n "${_V[$n.fs]}" ]]; then
             err "Oddíl $p (${_V[$n.fs]}) nemá datové soubory."
+            bad=1
+        fi
+    done
+    # oddíl v tabulce disku, který se do obrazu nezálohoval (obraz jen vybraných oddílů)
+    for n in ${_V[parts]}; do
+        [[ "${_V[$n.role]}" == extended || -n "${_V[$n.img]}" ]] && continue
+        [[ -n "${_V[$n.fs]}" && "${_V[$n.fs]}" != swap ]] || continue
+        p=${_V[$n.pname]}
+        if [[ " $(img_disk_parts "${_V[dir]}" "${_V[src_disk]}") " != *" $p "* ]]; then
+            err "Oddíl $p (${_V[$n.fs]}) v obrazu není – obraz obsahuje jen vybrané oddíly disku ${_V[src_disk]}, jako celý disk se obnovit nedá (použij obnovu vybraných oddílů)."
             bad=1
         fi
     done
@@ -1277,7 +1373,7 @@ layout_detect_legacy() {
     for n in ${_D[parts]}; do
         (( _D[$n.start] % 2048 )) && unaligned=1
     done
-    if (( unaligned )) || (( bytes <= 34 * 1000 * 1000 * 1000 )); then _D[mode]=legacy; fi
+    (( unaligned )) && _D[mode]=legacy
     (( bytes <= 34 * 1000 * 1000 * 1000 )) && SMALL_MEDIA=1
     return 0
 }
@@ -1331,6 +1427,10 @@ layout_compute() {
     fi
     _N[sector]=$ss
     total=$(( BLK[$tgt.SIZE] / ss ))
+    if [[ "${_S[label]}" != gpt ]] && (( total > 4294967296 )); then
+        warn "Tabulka MBR adresuje nejvýš $(human $(( 4294967296 * ss ))) – zbytek disku $tgt ($(human $(( (total - 4294967296) * ss )))) zůstane nevyužitý. Celý disk využije jen GPT (menu 8 → 3, pro Windows XP / Beckhoff nevhodné)."
+        total=4294967296
+    fi
     _N[disk_sectors]=$total
     if [[ "${_S[label]}" == gpt ]]; then end=$(( total - 34 )); _N[last_lba]=$end; else end=$(( total - 1 )); fi
     _N[tgt]=$tgt
@@ -1403,6 +1503,20 @@ layout_compute() {
             fi
         fi
     fi
+    # strop FAT16 (2 GiB) a FAT12: oddíl nesmí být větší, než FS unese (zbytek disku zůstane volný)
+    local cap
+    for n in "${order[@]}"; do
+        case "${_N[$n.fatbits]:-}" in
+            16) cap=$(( 2047 * MiB )) ;;
+            12) cap=$(( 32 * MiB )) ;;
+            *)  continue ;;
+        esac
+        (( cap < _S[$n.size] * _S[sector] )) && cap=$(( _S[$n.size] * _S[sector] ))
+        if (( _N[$n.size] * ss > cap )); then
+            _N[$n.size]=$(( cap / ss ))
+            warn "Oddíl ${_N[$n.pname]} (FAT${_N[$n.fatbits]}) se zvětší jen na $(human "$cap") – víc FAT${_N[$n.fatbits]} neunese; zbytek místa zůstane nevyužitý."
+        fi
+    done
     # rozšířený oddíl (MBR) obalí všechny logické
     for n in ${_N[parts]}; do
         if [[ "${_N[$n.role]}" == extended ]]; then
@@ -1556,14 +1670,27 @@ img_oneline() {
     fi
 }
 
-# Výběr obrazu; výsledek v IMG_DIR
+# Přeloží zadání obrazu (cesta nebo název pod partimag) na adresář; výsledek v IMG_RES
+img_resolve() {
+    local spec=$1
+    if [[ -d "$spec" ]]; then IMG_RES=$spec
+    elif [[ -d "$(partimag_dir)/$spec" ]]; then IMG_RES="$(partimag_dir)/$spec"
+    else die "$E_USER" "Obraz $spec nenalezen."; fi
+    [[ -n "$LIVE_MEDIUM" && "$IMG_RES" == "$LIVE_MEDIUM"* ]] && die "$E_USER" "Obraz nesmí ležet na flashce s Clonezillou."
+    return 0
+}
+
+# Výběr obrazu; výsledek v IMG_DIR (a IMG_DIRS). S argumentem "multi" lze vybrat i několik obrazů najednou
+# (--image A,B,… nebo položka "Více záloh najednou").
 img_select() {
-    local base list=() d items=()
+    ui_theme green
+    local multi=${1:-} base list=() d items=() spec t
+    local -a specs=()
+    IMG_DIRS=()
     if [[ -n "$OPT_IMAGE" ]]; then
-        if [[ -d "$OPT_IMAGE" ]]; then IMG_DIR=$OPT_IMAGE
-        elif [[ -d "$(partimag_dir)/$OPT_IMAGE" ]]; then IMG_DIR="$(partimag_dir)/$OPT_IMAGE"
-        else die "$E_USER" "Obraz $OPT_IMAGE nenalezen."; fi
-        [[ -n "$LIVE_MEDIUM" && "$IMG_DIR" == "$LIVE_MEDIUM"* ]] && die "$E_USER" "Obraz nesmí ležet na flashce s Clonezillou."
+        if [[ -n "$multi" ]]; then IFS=, read -ra specs <<<"$OPT_IMAGE"; else specs=("$OPT_IMAGE"); fi
+        for spec in "${specs[@]}"; do img_resolve "$spec"; IMG_DIRS+=("$IMG_RES"); done
+        IMG_DIR=${IMG_DIRS[0]}
         return 0
     fi
     base=$(partimag_dir)
@@ -1571,30 +1698,46 @@ img_select() {
     if (( ${#list[@]} == 0 )); then
         ui_msg "V $PARTIMAG_MP (/dev/${IMAGES_PART:-?}) nebyl nalezen žádný obraz Clonezilly (adresář s 'parts' a 'disk', hloubka max. 3)."
         if ui_input "Zadej ručně cestu k obrazu (q = zpět)" ""; then
-            [[ -n "$UI_REPLY" && -f "$UI_REPLY/parts" ]] && { IMG_DIR=$UI_REPLY; return 0; }
+            [[ -n "$UI_REPLY" && -f "$UI_REPLY/parts" ]] && { IMG_DIR=$UI_REPLY; IMG_DIRS=("$IMG_DIR"); return 0; }
         fi
         return 1
     fi
     for d in "${list[@]}"; do items+=("${d#"$base"/}" "${d#"$base"/}  ($(img_oneline "$d"))"); done
+    if [[ -n "$multi" ]] && (( ${#list[@]} > 1 )); then
+        items+=("@multi" "Více záloh najednou (sloučit na jeden disk / obnovit na více disků)")
+    fi
     ui_menu "Výběr obrazu" "Obrazy na /dev/${IMAGES_PART:-?}:" "${items[@]}" || return 1
-    IMG_DIR="$base/$UI_REPLY"
+    if [[ "$UI_REPLY" == @multi ]]; then
+        items=()
+        for d in "${list[@]}"; do items+=("${d#"$base"/}" "${d#"$base"/}  ($(img_oneline "$d"))" off); done
+        ui_checklist "Výběr záloh" "Které zálohy použít? (zdroje se pak dají sloučit na jeden disk nebo rozdělit na víc disků)" "${items[@]}" || return 1
+        for t in $UI_REPLY; do IMG_DIRS+=("$base/$t"); done
+    else
+        IMG_DIRS=("$base/$UI_REPLY")
+    fi
+    IMG_DIR=${IMG_DIRS[0]}
 }
 
 # Informace o obrazu (menu 6, --info)
 img_info() {
+    ui_theme green
     local -n _F=$1
     local n
     {
-        printf 'Obraz:       %s\n' "${_F[dir]##*/}"
-        printf 'Cesta:       %s\n' "${_F[dir]}"
+        local x imgs="" dsize=0
+        local -a dl=()
+        if [[ -n "${_F[dirs]:-}" ]]; then IFS='|' read -ra dl <<<"${_F[dirs]}"; else dl=("${_F[dir]}"); fi
+        for x in "${dl[@]}"; do imgs+="${imgs:+, }${x##*/}"; dsize=$(( dsize + $(img_size "$x") )); done
+        printf 'Obraz:       %s\n' "$imgs"
+        if (( ${#dl[@]} == 1 )); then printf 'Cesta:       %s\n' "${_F[dir]}"; fi
         if [[ -n "${_F[merged]:-}" ]]; then
-            printf 'Zdroj. disky: %s → sloučí se na jeden cíl (oddíly za sebou), tabulka %s\n' "${_F[merged]}" "${_F[label]}"
+            printf 'Zdroje:      %s → sloučí se na jeden cíl (oddíly za sebou), tabulka %s\n' "${_F[merged]}" "${_F[label]}"
         else
             printf 'Zdroj. disk: %s, %s, tabulka %s, sektor %s B\n' "${_F[src_disk]}" \
                 "$(human $(( _F[disk_sectors] * _F[sector] )))" "${_F[label]}" "${_F[sector]}"
         fi
         printf 'Režim:       %s\n' "$([[ "${_F[mode]}" == legacy ]] && echo 'legacy (Beckhoff) – začátky oddílů se zachovají' || echo obecný)"
-        printf 'Velikost dat obrazu: %s\n\n' "$(human "$(img_size "${_F[dir]}")")"
+        printf 'Velikost dat obrazu: %s\n\n' "$(human "$dsize")"
         printf '%-11s %10s %10s %-6s %-9s %-8s %-6s %11s %11s  %s\n' ODDÍL START SEKTORY FS ROLE TYP KOMPR VELIKOST OBSAZENO LABEL
         for n in ${_F[parts]}; do
             printf '%-11s %10s %10s %-6s %-9s %-8s %-6s %11s %11s  %s%s\n' "${_F[$n.pname]}" "${_F[$n.start]}" "${_F[$n.size]}" \
@@ -1611,7 +1754,25 @@ img_info() {
 # FS – změna velikosti a kontrola souborových systémů (kap. 5.3)
 # =============================================================================
 
+# Velikost FAT / exFAT souborového systému v bajtech podle boot sektoru (prázdné v simulaci / dry-run)
+fat_fs_bytes() {
+    local dev=$1 bps sec len shift
+    (( SIMULATE || DRY_RUN )) && return 0
+    if [[ "$(dd if="$dev" bs=1 skip=3 count=8 status=none 2>/dev/null)" == "EXFAT   " ]]; then
+        len=$(dd if="$dev" bs=1 skip=72 count=8 status=none 2>/dev/null | od -An -tu8 | tr -d ' ')
+        shift=$(dd if="$dev" bs=1 skip=108 count=1 status=none 2>/dev/null | od -An -tu1 | tr -d ' ')
+        [[ "$len" =~ ^[0-9]+$ && "$shift" =~ ^[0-9]+$ ]] && echo $(( len << shift ))
+        return 0
+    fi
+    bps=$(dd if="$dev" bs=1 skip=11 count=2 status=none 2>/dev/null | od -An -tu2 | tr -d ' ')
+    sec=$(dd if="$dev" bs=1 skip=19 count=2 status=none 2>/dev/null | od -An -tu2 | tr -d ' ')
+    [[ "$sec" =~ ^[0-9]+$ ]] && (( sec )) || sec=$(dd if="$dev" bs=1 skip=32 count=4 status=none 2>/dev/null | od -An -tu4 | tr -d ' ')
+    [[ "$bps" =~ ^[0-9]+$ && "$sec" =~ ^[0-9]+$ ]] && echo $(( bps * sec ))
+    return 0
+}
+
 # Roztažení FS na celý oddíl: fs_grow <fs> <zařízení> [původní_bajty] [začátek_oddílu]
+# U FAT se původní velikost i začátek oddílu zjistí samy, když se nezadají (klon, obnova vybraných oddílů).
 fs_grow() {
     local fs=$1 dev=$2 old=${3:-} start=${4:-} mp
     case "$fs" in
@@ -1623,11 +1784,13 @@ fs_grow() {
             run ntfsresize --force --no-action "$dev"
             run_sh "echo y | ntfsresize --force --no-progress-bar $dev"
             warn "Windows při prvním startu po změně velikosti NTFS spustí chkdsk – to je v pořádku." ;;
-        vfat|fat|fat12|fat16|fat32)
+        vfat|fat|fat12|fat16|fat32|exfat)
+            [[ -n "$old" ]] || old=$(fat_fs_bytes "$dev")
+            [[ -n "$start" ]] || start=$(cat "/sys/class/block/${dev##*/}/start" 2>/dev/null || true)
             if [[ -n "$old" ]]; then
-                fs_fat_rebuild "$dev" "$old" "${start:-0}"
-            elif sys_have fatresize && run fatresize -s max "$dev"; then
-                return 0
+                fs_fat_rebuild "$dev" "$old" "${start:-0}" "$fs"
+            elif [[ "$fs" == exfat ]]; then
+                warn "exFAT na $dev se nezvětšil (velikost FS se nepodařilo zjistit)."
             else
                 warn "FAT na $dev se nezvětšila (fatresize chybí nebo selhal)."
             fi ;;
@@ -1697,8 +1860,17 @@ restore_choose_mode() {
 restore_part_cmd() {
     local -n _P=$1
     local n=$2 dst=$3 stream nflag=""
-    stream=$(img_stream_cmd "${_P[dir]}" "${_P[$n.pname]}") || return 1
-    [[ "$UI_BACKEND" == dialog ]] && nflag=" -N"
+    if [[ "${_P[$n.img]}" == device ]]; then
+        # klon: proud partclone přímo ze zdrojového oddílu (stejné zpracování jako obnova z obrazu)
+        if [[ "${_P[$n.imgtype]}" == ptcl ]]; then
+            # čtecí strana bez výpisu průběhu (-q), jinak se dva průběhy kreslí přes sebe
+            echo "partclone.${_P[$n.fs]} -c -q -s /dev/${_P[$n.pname]} -o - -L /tmp/partclone-clone.log 2>>/tmp/partclone-clone.log | partclone.${_P[$n.fs]} -r -s - -o $dst$nflag"
+        else
+            echo "dd if=/dev/${_P[$n.pname]} bs=4M status=none | dd of=$dst bs=4M status=progress conv=fsync"
+        fi
+        return 0
+    fi
+    stream=$(img_stream_cmd "${_P[$n.dir]:-${_P[dir]}}" "${_P[$n.pname]}") || return 1
     case "${_P[$n.imgtype]}" in
         ptcl) echo "$stream | partclone.${_P[$n.fs]} -r -s - -o $dst$nflag" ;;
         ntfs) echo "$stream | ntfsclone --restore-image --overwrite $dst -" ;;
@@ -1731,6 +1903,8 @@ restore_shrink_part() {
             fs_grow "$fs" "$dst" ;;
         vfat|fat*)
             fs_fat_copy "$l" "$dst" "${_N[$n.start]}" ;;
+        exfat)
+            fs_exfat_copy "$l" "$dst" ;;
         *)
             fs_copy_files "$fs" "$l" "$dst" "${_S[$n.fsuuid]}" "${_S[$n.label]}" ;;
     esac
@@ -1738,71 +1912,141 @@ restore_shrink_part() {
     run rm -f "$img"
 }
 
-# Obnova obrazu – celý průběh. Vícediskový obraz: sloučit na jeden disk (výchozí), nebo každý disk zvlášť.
+# Zdroj obnovy = "jednotka" "adresář|disk": jeden disk z jednoho obrazu (obraz jich může mít víc).
+# Název pro uživatele: "sda"; je-li vybráno víc obrazů, "OBRAZ:sda".
+unit_name() {
+    local dir=${1%%|*} disk=${1#*|}
+    if (( ${#IMG_DIRS[@]} > 1 )); then echo "${dir##*/}:$disk"; else echo "$disk"; fi
+}
+
+# Zadání z příkazové řádky ("sda" nebo "OBRAZ:sda") → jednotka v UNIT_RES
+unit_resolve() {
+    local spec=$1 u
+    local -a hit=()
+    for u in "${UNITS[@]}"; do
+        if [[ "$(unit_name "$u")" == "$spec" || "${u#*|}" == "$spec" ]]; then hit+=("$u"); fi
+    done
+    (( ${#hit[@]} )) || die "$E_USER" "Zdroj '$spec' ve vybraných zálohách není (k dispozici: $(for u in "${UNITS[@]}"; do printf '%s ' "$(unit_name "$u")"; done))."
+    (( ${#hit[@]} == 1 )) || die "$E_USER" "Zdroj '$spec' je ve více obrazech – uveď ho jako OBRAZ:disk."
+    UNIT_RES=${hit[0]}
+}
+
+# Obnova ze zálohy – celý průběh. Zdroje (disky ze zálohy; i z několika záloh) se dají:
+#   sloučit na JEDEN cílový disk (oddíly za sebou), obnovit každý na vlastní cílový disk,
+#   nebo libovolně seskupit (--groups "sda+sdb,sdc" / volba "Vlastní rozdělení").
 restore_disk() {
-    local d i how=""
-    local -a disks=() sel=() targets=() items=()
+    local d i u m spec dir how="" k g why
+    local -a sel=() targets=() items=() grp=() groups=() specs=() members=() nums=() names=() done_names=()
     blk_load
     live_detect
     ui_step "krok 1/6: disk se zálohami"
     src_select ro || return "$E_USER"
     ui_step "krok 2/6: výběr zálohy"
-    img_select || return "$E_USER"
-    mapfile -t disks < <(img_disks "$IMG_DIR")
+    img_select multi || return "$E_USER"
+    UNITS=()
+    for dir in "${IMG_DIRS[@]}"; do
+        while read -r d; do UNITS+=("$dir|$d"); done < <(img_disks "$dir")
+    done
     IFS=, read -ra targets <<<"$OPT_TARGET"
-    if (( ${#disks[@]} > 1 )); then
+    if [[ -n "$OPT_TARGET" ]] && (( $(printf '%s\n' "${targets[@]}" | sort -u | wc -l) != ${#targets[@]} )); then
+        die "$E_USER" "--target uvádí tentýž disk vícekrát (${targets[*]}). Nic nebylo zapsáno."
+    fi
+    if [[ -n "$OPT_GROUPS" ]]; then
+        IFS=, read -ra specs <<<"$OPT_GROUPS"
+        for spec in "${specs[@]}"; do
+            IFS=+ read -ra members <<<"$spec"
+            grp=()
+            for m in "${members[@]}"; do
+                unit_resolve "$m"
+                [[ ";${sel[*]// /;};" == *";$UNIT_RES;"* ]] && die "$E_USER" "Zdroj '$m' je v --groups použit víckrát."
+                grp+=("$UNIT_RES"); sel+=("$UNIT_RES")
+            done
+            groups+=("$(IFS=';'; echo "${grp[*]}")")
+        done
+        how=groups
+    else
         if [[ -n "$OPT_SOURCE_DISK" ]]; then
-            IFS=, read -ra sel <<<"$OPT_SOURCE_DISK"; how=separate
-        elif (( ${#targets[@]} > 1 )); then
-            sel=("${disks[@]}"); how=separate
-        elif (( ${#targets[@]} == 1 )); then
-            sel=("${disks[@]}"); how=merge
+            IFS=, read -ra specs <<<"$OPT_SOURCE_DISK"
+            for spec in "${specs[@]}"; do unit_resolve "$spec"; sel+=("$UNIT_RES"); done
         else
-            items=(merge "Sloučit ${disks[*]} na JEDEN cílový disk (oddíly za sebou)")
-            items+=(separate "Každý disk na jiný cílový disk")
-            for d in "${disks[@]}"; do items+=("only-$d" "Jen disk $d  (oddíly: $(img_disk_parts "$IMG_DIR" "$d"))"); done
-            ui_menu "Záloha obsahuje ${#disks[@]} disky" "Záloha ${IMG_DIR##*/} obsahuje disky: ${disks[*]}. Jak obnovit?" "${items[@]}" || return "$E_USER"
+            sel=("${UNITS[@]}")
+        fi
+        if (( ${#sel[@]} == 1 )); then how=separate
+        elif (( ${#targets[@]} > 1 )); then how=separate
+        elif (( ${#targets[@]} == 1 )); then how=merge
+        elif [[ -n "$OPT_SOURCE_DISK" ]]; then how=separate
+        else
+            for u in "${sel[@]}"; do names+=("$(unit_name "$u")"); done
+            items=(merge "Sloučit ${names[*]} na JEDEN cílový disk (oddíly za sebou)")
+            items+=(separate "Každý zdroj na jiný cílový disk")
+            for i in "${!sel[@]}"; do
+                u=${sel[i]}
+                items+=("only-$i" "Jen $(unit_name "$u")  (oddíly: $(img_disk_parts "${u%%|*}" "${u#*|}"))")
+            done
+            items+=(custom "Vlastní rozdělení: určit, co půjde na který cílový disk")
+            if (( ${#IMG_DIRS[@]} == 1 )); then
+                ui_menu "Záloha obsahuje ${#sel[@]} disky" "Záloha ${IMG_DIRS[0]##*/} obsahuje disky: ${names[*]}. Jak obnovit?" "${items[@]}" || return "$E_USER"
+            else
+                ui_menu "Vybrané zálohy obsahují ${#sel[@]} disků" "K obnově je ${#sel[@]} disků ze ${#IMG_DIRS[@]} záloh: ${names[*]}. Jak je obnovit?" "${items[@]}" || return "$E_USER"
+            fi
             case "$UI_REPLY" in
-                merge)    sel=("${disks[@]}"); how=merge ;;
-                separate) sel=("${disks[@]}"); how=separate ;;
-                only-*)   sel=("${UI_REPLY#only-}"); how=separate ;;
+                merge)    how=merge ;;
+                separate) how=separate ;;
+                only-*)   sel=("${sel[${UI_REPLY#only-}]}"); how=separate ;;
+                custom)
+                    how=groups
+                    nums=()
+                    for u in "${sel[@]}"; do
+                        while true; do
+                            ui_input "Na který cílový disk půjde $(unit_name "$u")? Číslo 1, 2, 3… (stejné číslo = sloučí se na jeden disk, 0 = tento zdroj neobnovovat)" "$(( ${#nums[@]} + 1 ))" || return "$E_USER"
+                            [[ "$UI_REPLY" =~ ^[0-9]+$ ]] && break
+                            warn "Zadej celé číslo."
+                        done
+                        nums+=("$UI_REPLY")
+                    done
+                    for k in $(printf '%s\n' "${nums[@]}" | sort -nu); do
+                        (( k == 0 )) && continue
+                        grp=()
+                        for i in "${!sel[@]}"; do (( nums[i] == k )) && grp+=("${sel[i]}"); done
+                        groups+=("$(IFS=';'; echo "${grp[*]}")")
+                    done
+                    (( ${#groups[@]} )) || { ui_msg "Nic nebylo vybráno k obnově."; return "$E_USER"; } ;;
             esac
         fi
-    else
-        sel=("${disks[0]}"); how=separate
+        case "$how" in
+            merge)    groups=("$(IFS=';'; echo "${sel[*]}")") ;;
+            separate) groups=("${sel[@]}") ;;
+        esac
     fi
-    for d in "${sel[@]}"; do
-        [[ " ${disks[*]} " == *" $d "* ]] || die "$E_USER" "Disk '$d' v záloze není (záloha obsahuje: ${disks[*]})."
+    if (( ${#targets[@]} && ${#targets[@]} != ${#groups[@]} )); then
+        die "$E_USER" "Obnovuje se na ${#groups[@]} cílových disků, ale --target uvádí ${#targets[@]}: zadej např. --target sdf,sdg. Nic nebylo zapsáno."
+    fi
+    # všechny zadané cíle se zkontrolují PŘED prvním zápisem
+    for u in "${targets[@]}"; do
+        [[ "${BLK[$u.TYPE]:-}" == disk ]] || die "$E_USER" "Cílový disk $u neexistuje. Nic nebylo zapsáno."
+        if why=$(disk_protect_reason "$u"); then die "$E_USER" "Disk $u nelze použít jako cíl: $why. Nic nebylo zapsáno."; fi
+        if [[ -n "$OPT_YES" && ",$OPT_YES," != *",$u,"* ]]; then
+            die "$E_USER" "--yes-i-know '$OPT_YES' nepotvrzuje cílový disk $u (uveď všechny cíle: --yes-i-know sdf,sdg). Nic nebylo zapsáno."
+        fi
     done
     RESTORE_USED_TARGETS=()
-    if [[ "$how" == merge ]]; then
-        read -ra MERGE_DISKS <<<"$(merge_order "$IMG_DIR" "${sel[@]}")"
-        if img_disk_bootable "$IMG_DIR" "${MERGE_DISKS[0]}"; then
-            info "Bootovací disk ze zálohy: ${MERGE_DISKS[0]} – jeho oddíl bude na cíli první (boot kód MBR, disk signature a aktivní příznak se převezmou z něj)."
-        else
-            warn "Žádný disk v záloze nemá bootovací oddíl – pořadí zůstává ${MERGE_DISKS[*]}."
-        fi
-        info "Pořadí oddílů na cílovém disku: ${MERGE_DISKS[*]}"
-        restore_one_disk "@merge" "${targets[0]:-}"
-        return $?
-    fi
-    if (( ${#targets[@]} && ${#targets[@]} != ${#sel[@]} )); then
-        die "$E_USER" "Obnovují se ${#sel[@]} disky (${sel[*]}), ale --target uvádí ${#targets[@]}: zadej např. --target sdf,sdg. Nic nebylo zapsáno."
-    fi
-    for i in "${!sel[@]}"; do
-        (( ${#sel[@]} > 1 )) && step "$(( i + 1 ))" "${#sel[@]}" "Disk ${sel[i]} ze zálohy"
-        restore_one_disk "${sel[i]}" "${targets[i]:-}" || return $?
+    for g in "${!groups[@]}"; do
+        IFS=';' read -ra grp <<<"${groups[g]}"
+        names=()
+        for u in "${grp[@]}"; do names+=("$(unit_name "$u")"); done
+        if (( ${#groups[@]} > 1 )); then step "$(( g + 1 ))" "${#groups[@]}" "Cílový disk č. $(( g + 1 )): ${names[*]}"; fi
+        restore_one_disk "${targets[g]:-}" "${grp[@]}" || return $?
         RESTORE_USED_TARGETS+=("$LAST_TARGET")
+        done_names+=("$(IFS=+; echo "${names[*]}") → $LAST_TARGET")
     done
-    if (( ${#sel[@]} > 1 )); then
-        ok "Obnoveny disky ze zálohy: $(for i in "${!sel[@]}"; do printf '%s → %s  ' "${sel[i]}" "${RESTORE_USED_TARGETS[i]}"; done)"
-    fi
+    if (( ${#groups[@]} > 1 )); then ok "Obnoveno: ${done_names[*]}"; fi
 }
 
 # Provedení obnovy (všechny zápisy přes run)
 restore_execute() {
     local -n _X=$1 _Y=$2
     local tgt=$3 n i=0 total dst nparts tbl
+    [[ "$UI_BACKEND" == plain ]] || clear
     nparts=$(wc -w <<<"${_X[parts]}")
     total=$(( 3 + nparts ))
     i=$((i + 1)); step "$i" "$total" "Smazání staré tabulky oddílů na /dev/$tgt"
@@ -1817,8 +2061,8 @@ restore_execute() {
     if [[ "${_Y[label]}" == gpt ]]; then run sgdisk -e "/dev/$tgt"; fi
     if [[ "${_X[label]}" == dos ]]; then
         local mbr="${_X[dir]}/${_X[src_disk]}-mbr" hid="${_X[dir]}/${_X[src_disk]}-hidden-data-after-mbr"
-        [[ -r "$mbr" ]] && run dd if="$mbr" of="/dev/$tgt" bs=446 count=1 conv=notrunc
-        [[ -r "$hid" ]] && run dd if="$hid" of="/dev/$tgt" bs=512 seek=1 conv=notrunc
+        [[ -r "$mbr" ]] && run dd if="$mbr" of="/dev/$tgt" bs=446 count=1 conv=notrunc status=none
+        [[ -r "$hid" ]] && run dd if="$hid" of="/dev/$tgt" bs=512 seek=1 conv=notrunc status=none
     fi
     # shellcheck disable=SC2086  # seznam čísel oddílů se má rozdělit
     disk_rescan "$tgt" ${_Y[parts]}
@@ -1848,6 +2092,8 @@ restore_execute() {
 
     i=$((i + 1)); step "$i" "$total" "Opravy po obnově"
     restore_fixups "$1" "$2" "$tgt"
+    info "Zapisuji data na disk (sync)…"
+    run sync
     restore_summary "$2" "$tgt"
 }
 
@@ -1911,8 +2157,13 @@ restore_summary() {
     local -n _Z=$1
     local tgt=$2 dur
     dur=$(( $(date +%s) - START_TS ))
+    # udev o novém FS ještě nemusí vědět (hlavně USB) – nechat disk znovu načíst, ať lsblk ukáže skutečný stav
+    if (( ! SIMULATE && ! DRY_RUN )); then
+        udevadm trigger --action=change "/dev/$tgt" /dev/"$tgt"?* 2>/dev/null || true
+        udevadm settle --timeout=10 2>/dev/null || sleep 2
+    fi
     {
-        echo "Hotovo: obnova na /dev/$tgt"
+        if [[ -n "${CLONE_SRC:-}" ]]; then echo "Hotovo: klon /dev/$CLONE_SRC → /dev/$tgt"; else echo "Hotovo: obnova na /dev/$tgt"; fi
         echo "Doba běhu: $(( dur / 60 )) min $(( dur % 60 )) s"
         echo "Log: $LOG_FILE"
         if (( SIMULATE )); then echo "(SIMULACE – nic nebylo zapsáno)"; fi
@@ -2142,6 +2393,7 @@ editor_run() {
 
 # Výběr oddílu z nechráněných disků; výsledek v UI_REPLY
 part_select() {
+    ui_theme red
     local title=$1 d c items=()
     for d in $(disk_all); do
         disk_protect_reason "$d" >/dev/null && continue
@@ -2155,6 +2407,7 @@ part_select() {
 
 # Výběr zdrojového disku (ne flashka, ne disk s obrazy)
 disk_select_source() {
+    ui_theme green
     local d why items=()
     for d in $(disk_all); do
         why=$(disk_protect_reason "$d") || why=""
@@ -2165,22 +2418,22 @@ disk_select_source() {
     ui_menu "${1:-Zdrojový disk}" "Vyber disk:" "${items[@]}"
 }
 
-# 2) Obnova vybraných oddílů na existující oddíly
-menu_02_restore_parts() {
+# Jeden průchod obnovy vybraných oddílů (jeden disk jedné zálohy); 1 = zrušeno
+restore_parts_pass() {
     local n sel dst
-    src_select ro || return 0
-    img_select || return 0
-    img_pick_disk "$IMG_DIR" || return 0
+    src_select ro || return 1
+    img_select || return 1
+    img_pick_disk "$IMG_DIR" || return 1
     img_load "$IMG_DIR" SRC "$UI_REPLY"
     img_info SRC
     local items=()
     for n in ${SRC[parts]}; do
         [[ -n "${SRC[$n.img]}" ]] && items+=("$n" "${SRC[$n.pname]} ${SRC[$n.fs]} $(human $(( SRC[$n.size] * SRC[sector] )))" off)
     done
-    ui_checklist "Oddíly k obnově" "Které oddíly obnovit?" "${items[@]}" || return 0
+    ui_checklist "Oddíly k obnově" "Které oddíly obnovit?" "${items[@]}" || return 1
     sel=$UI_REPLY
     for n in $sel; do
-        part_select "Cíl pro ${SRC[$n.pname]} (${SRC[$n.fs]})" || return 0
+        part_select "Cíl pro ${SRC[$n.pname]} (${SRC[$n.fs]})" || return 1
         dst=$UI_REPLY
         if (( BLK[$dst.SIZE] < ${SRC[$n.min]:-0} )); then
             warn "Oddíl $dst je menší než minimum $(human "${SRC[$n.min]}") – přeskakuji."
@@ -2192,6 +2445,16 @@ menu_02_restore_parts() {
         (( SIMULATE || DRY_RUN )) && sim_progress "Obnova /dev/$dst"
         (( BLK[$dst.SIZE] > SRC[$n.size] * SRC[sector] )) && fs_grow "${SRC[$n.fs]}" "/dev/$dst"
     done
+    return 0
+}
+
+# 2) Obnova vybraných oddílů na existující oddíly. Lze opakovat s dalším diskem / další zálohou,
+# takže jde obnovit oddíly z libovolného počtu disků a záloh.
+menu_02_restore_parts() {
+    while true; do
+        restore_parts_pass || return 0
+        ui_yesno "Obnovit ještě další oddíly (z jiného disku nebo jiné zálohy)?" n || return 0
+    done
 }
 
 # Typ oddílu z tabulky (sfdisk) – pro rozpoznání rozšířeného oddílu
@@ -2200,14 +2463,9 @@ part_type() {
     sys_sfdisk_dump "$disk" | awk -v d="/dev/$p" '$1==d { for (i=1;i<=NF;i++) if ($i ~ /^type=/) { sub(/^type=/,"",$i); sub(/,$/,"",$i); print $i } }'
 }
 
-# Zápis metadat obrazu ve formátu Clonezilly (kap. 3 / 6)
-# backup_write_meta <adresář> <disk> <oddíly…>
-backup_write_meta() {
-    local dir=$1 disk=$2; shift 2
-    local parts="$*" label first total p devs=()
-    run mkdir -p "$dir"
-    run_sh "echo '$disk' > '$dir/disk'"
-    run_sh "echo '$parts' > '$dir/parts'"
+# Metadata jednoho disku v obrazu: tabulka oddílů, MBR / GPT, skrytá data za MBR
+backup_write_disk_meta() {
+    local dir=$1 disk=$2 label first total
     run_sh "sfdisk --dump /dev/$disk > '$dir/$disk-pt.sf'"
     run_sh "LC_ALL=C parted -s /dev/$disk unit s print > '$dir/$disk-pt.parted' 2>/dev/null || true"
     run_sh "LC_ALL=C parted -s /dev/$disk unit compact print > '$dir/$disk-pt.parted.compact' 2>/dev/null || true"
@@ -2226,10 +2484,23 @@ backup_write_meta() {
             run dd if="/dev/$disk" of="$dir/$disk-hidden-data-after-mbr" bs=512 skip=1 count=$(( first - 1 )) status=none
         fi
     fi
-    for p in $(blk_children "$disk"); do devs+=("/dev/$p"); done
+}
+
+# Zápis metadat obrazu ve formátu Clonezilly (kap. 3 / 6)
+# backup_write_meta <adresář> "<disky>" "<oddíly>"   (víc disků v jednom obrazu = jako savedisk sda sdb)
+backup_write_meta() {
+    local dir=$1 disks=$2 parts=$3 d p dpaths="" devs=()
+    run mkdir -p "$dir"
+    run_sh "echo '$disks' > '$dir/disk'"
+    run_sh "echo '$parts' > '$dir/parts'"
+    for d in $disks; do
+        backup_write_disk_meta "$dir" "$d"
+        dpaths+=" /dev/$d"
+        for p in $(blk_children "$d"); do devs+=("/dev/$p"); done
+    done
     run_sh "blkid -c /dev/null ${devs[*]} > '$dir/blkid.list' || true"
     run_sh "{ echo '# <Device name>   <File system>   <Size>'; lsblk -nro NAME,FSTYPE,SIZE ${devs[*]} | awk '{print \"/dev/\" \$1, (\$2==\"\" ? \"-\" : \$2), \$3}'; } > '$dir/dev-fs.list'"
-    run_sh "lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MODEL,SERIAL /dev/$disk > '$dir/Info-lsblk.txt'"
+    run_sh "lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MODEL,SERIAL$dpaths > '$dir/Info-lsblk.txt'"
     run_sh "echo 'Image was saved by restore.sh $VERSION at $(date -u '+%F %T') UTC' > '$dir/Info-saved-by-cmd.txt'"
     run_sh "echo 'This image was saved by Clonezilla-compatible restore.sh at $(date -u '+%F %T') UTC' > '$dir/clonezilla-img'"
 }
@@ -2275,96 +2546,291 @@ backup_parts_data() {
 # Kontrolní součty obrazu
 backup_checksums() { run_sh "cd '$1' && sha1sum -- *.*-img.* > SHA1SUMS"; }
 
-# Záloha celého disku: backup_disk_do <disk> <název>
-backup_disk_do() {
-    local disk=$1 name=$2 dir p parts=() why t
-    [[ "${BLK[$disk.TYPE]:-}" == disk ]] || die "$E_USER" "Disk $disk neexistuje."
-    why=$(disk_protect_reason "$disk") && die "$E_USER" "Disk $disk nelze zálohovat: $why."
+# Rozbor položek zálohy: disk = celý disk, oddíl = jen on. Naplní BK_DISKS, BK_PARTS, BK_SWAPS
+# (dohromady může být cokoliv: víc disků, víc oddílů, oddíly z různých disků, disk + oddíl jiného disku).
+BK_DISKS=() BK_PARTS=() BK_SWAPS=()
+backup_resolve() {
+    local it d p t why n
+    local -A whole=() picked=()
+    BK_DISKS=() BK_PARTS=() BK_SWAPS=()
+    (( $# )) || die "$E_USER" "Není co zálohovat."
+    for it in "$@"; do
+        it=${it#/dev/}
+        case "${BLK[$it.TYPE]:-}" in
+            disk)
+                why=$(disk_protect_reason "$it") && die "$E_USER" "Disk $it nelze zálohovat: $why."
+                whole[$it]=1
+                [[ " ${BK_DISKS[*]} " == *" $it "* ]] || BK_DISKS+=("$it") ;;
+            part)
+                d=$(blk_parent "$it")
+                picked[$it]=1
+                [[ " ${BK_DISKS[*]} " == *" $d "* ]] || BK_DISKS+=("$d") ;;
+            *) die "$E_USER" "'$it' není disk ani oddíl." ;;
+        esac
+    done
+    for d in "${BK_DISKS[@]}"; do
+        n=$(( ${#BK_PARTS[@]} + ${#BK_SWAPS[@]} ))
+        for p in $(blk_children "$d"); do
+            t=$(part_type "$d" "$p")
+            if [[ -n "${whole[$d]:-}" ]]; then
+                [[ "${t^^}" == @(5|F|85) ]] && continue          # rozšířený oddíl (MBR) se neukládá
+                if [[ "${BLK[$p.FSTYPE]:-}" == swap ]]; then BK_SWAPS+=("$p"); else BK_PARTS+=("$p"); fi
+            elif [[ -n "${picked[$p]:-}" ]]; then
+                [[ "${t^^}" == @(5|F|85) ]] && die "$E_USER" "Oddíl $p je rozšířený kontejner – zálohuj jeho logické oddíly."
+                [[ -z "${BLK[$p.MOUNTPOINT]:-}" ]] || die "$E_USER" "Oddíl $p je připojený (${BLK[$p.MOUNTPOINT]})."
+                BK_PARTS+=("$p")
+            fi
+        done
+        if [[ -n "${whole[$d]:-}" ]] && (( n == ${#BK_PARTS[@]} + ${#BK_SWAPS[@]} )); then
+            die "$E_USER" "Disk $d nemá žádný oddíl k zálohování."
+        fi
+    done
+    (( ${#BK_PARTS[@]} + ${#BK_SWAPS[@]} )) || die "$E_USER" "Vybrané položky neobsahují žádný oddíl k zálohování."
+    return 0
+}
+
+# JEDEN obraz ze všech položek: backup_do <název> <položka…>
+backup_do() {
+    local name=$1 dir; shift
     dir="$PARTIMAG_MP/$name"
+    backup_resolve "$@"
     (( SIMULATE )) || [[ ! -e "$dir" ]] || die "$E_USER" "Obraz $dir už existuje."
-    for p in $(blk_children "$disk"); do
-        t=$(part_type "$disk" "$p")
-        [[ "${t^^}" == @(5|F|85) ]] && continue          # rozšířený oddíl (MBR) se neukládá
-        [[ "${BLK[$p.FSTYPE]:-}" == swap ]] || parts+=("$p")
-    done
-    info "Záloha /dev/$disk → $dir (komprese $COMPRESS)"
-    backup_write_meta "$dir" "$disk" "${parts[@]}"
-    for p in $(blk_children "$disk"); do
-        [[ "${BLK[$p.FSTYPE]:-}" == swap ]] && backup_parts_data "$dir" "$p"
-    done
-    backup_parts_data "$dir" "${parts[@]}"
+    info "Záloha ${BK_DISKS[*]} ($*) → $dir (komprese $COMPRESS)"
+    backup_write_meta "$dir" "${BK_DISKS[*]}" "${BK_PARTS[*]}"
+    if (( ${#BK_SWAPS[@]} )); then backup_parts_data "$dir" "${BK_SWAPS[@]}"; fi
+    backup_parts_data "$dir" "${BK_PARTS[@]}"
     backup_checksums "$dir"
     ok "Obraz $name je hotový: $dir"
 }
 
-# Záloha jednoho oddílu: backup_part_do <oddíl> <název>
-backup_part_do() {
-    local p=$1 name=$2 dir
-    [[ "${BLK[$p.TYPE]:-}" == part ]] || die "$E_USER" "Oddíl $p neexistuje."
-    [[ -z "${BLK[$p.MOUNTPOINT]:-}" ]] || die "$E_USER" "Oddíl $p je připojený (${BLK[$p.MOUNTPOINT]})."
-    dir="$PARTIMAG_MP/$name"
-    (( SIMULATE )) || [[ ! -e "$dir" ]] || die "$E_USER" "Obraz $dir už existuje."
-    backup_write_meta "$dir" "$(blk_parent "$p")" "$p"
-    backup_parts_data "$dir" "$p"
-    backup_checksums "$dir"
-    ok "Obraz $name je hotový: $dir"
+# Záloha libovolné kombinace: backup_run <název|""> <zvlášť 0|1> <položka…>
+# zvlášť=0 → všechny položky do jednoho obrazu, zvlášť=1 → každá položka do vlastního obrazu (NÁZEV-položka).
+# Nejdřív se zkontrolují všechny položky a názvy, teprve potom se začne zapisovat.
+backup_run() {
+    local name=$1 sep=$2 it i stamp
+    shift 2
+    local -a items=() names=() groups=()
+    stamp=$(date +%Y%m%d-%H%M)
+    for it in "$@"; do
+        it=${it#/dev/}
+        [[ " ${items[*]} " == *" $it "* ]] || items+=("$it")
+    done
+    (( ${#items[@]} )) || die "$E_USER" "Není co zálohovat."
+    if (( sep && ${#items[@]} > 1 )); then
+        for it in "${items[@]}"; do
+            groups+=("$it")
+            if [[ -n "$name" ]]; then names+=("$name-$it"); else names+=("img-$it-$stamp"); fi
+        done
+    else
+        groups+=("${items[*]}")
+        names+=("${name:-img-$(IFS=-; echo "${items[*]}")-$stamp}")
+    fi
+    for i in "${!groups[@]}"; do
+        [[ "${names[i]}" =~ ^[A-Za-z0-9._+-]+$ ]] || die "$E_USER" "Název obrazu '${names[i]}' smí obsahovat jen písmena, číslice a . _ + -"
+        # shellcheck disable=SC2086  # položky se mají rozdělit
+        backup_resolve ${groups[i]}
+        (( SIMULATE )) || [[ ! -e "$PARTIMAG_MP/${names[i]}" ]] || die "$E_USER" "Obraz $PARTIMAG_MP/${names[i]} už existuje – nic nebylo zapsáno."
+    done
+    for i in "${!groups[@]}"; do
+        if (( ${#groups[@]} > 1 )); then step "$(( i + 1 ))" "${#groups[@]}" "Obraz ${names[i]}"; fi
+        # shellcheck disable=SC2086
+        backup_do "${names[i]}" ${groups[i]}
+    done
+    if (( ${#groups[@]} > 1 )); then ok "Hotovo: ${#groups[@]} obrazů (${names[*]})"; fi
+    # data z mezipaměti na disk – teprve potom je záloha opravdu hotová (USB disk se může odpojit)
+    info "Zapisuji data na disk (sync)…"
+    run sync
+    # souhrn: kde je záloha, jak je velká a jestli sedí kontrolní součty
+    local sum="" d chk sz
+    for i in "${!names[@]}"; do
+        d="$PARTIMAG_MP/${names[i]}"
+        if (( SIMULATE || DRY_RUN )); then chk="(simulace)"; sz="?"
+        else
+            if (cd "$d" && sha1sum -c --quiet SHA1SUMS >/dev/null 2>&1); then chk="kontrolní součty OK"; else chk="CHYBA kontrolních součtů!"; fi
+            sz=$(human "$(du -sb "$d" 2>/dev/null | cut -f1)")
+        fi
+        sum+="Obraz:  ${names[i]}"$'\n'"Místo:  /dev/${IMAGES_PART:-?} → $d"$'\n'"Obsah:  $(tr '\n' ' ' <"$d/disk" 2>/dev/null) / oddíly $(tr '\n' ' ' <"$d/parts" 2>/dev/null)"$'\n'"Velikost: $sz, $chk"$'\n\n'
+    done
+    sum+="Data jsou zapsaná na disku. Disk se zálohou odpoj až po návratu do hlavního menu (nejlépe po vypnutí VM / Clonezilly)."
+    [[ "$UI_BACKEND" == plain ]] || ui_msg "Záloha hotová.
+
+$sum"
+    [[ "$UI_BACKEND" == plain ]] && printf '%s\n%s' "Záloha hotová." "$sum"
+    return 0
 }
 
-# 3) Vytvoření obrazu disku
-menu_03_backup_disk() {
-    local disk
+# Výběr položek zálohy (zaškrtávací seznam); výsledek v UI_REPLY. mode: disks | parts | both
+backup_pick_items() {
+    ui_theme green
+    local mode=$1 d c why title items=()
+    for d in $(disk_all); do
+        why=$(disk_protect_reason "$d") || why=""
+        case "$mode" in
+            disks)
+                [[ -n "$why" ]] && continue
+                items+=("$d" "$(disk_desc "$d")" off) ;;
+            parts)
+                [[ -n "$why" ]] && continue
+                for c in $(blk_children "$d"); do
+                    items+=("$c" "$c  $(human "${BLK[$c.SIZE]:-0}") ${BLK[$c.FSTYPE]:--} ${BLK[$c.LABEL]:-} (${BLK[$d.MODEL]:-$d})" off)
+                done ;;
+            both)
+                [[ -n "$why" ]] && continue
+                items+=("$d" "CELÝ DISK $(disk_desc "$d")" off)
+                for c in $(blk_children "$d"); do
+                    items+=("$c" "   └ oddíl $c  $(human "${BLK[$c.SIZE]:-0}") ${BLK[$c.FSTYPE]:--} ${BLK[$c.LABEL]:-}" off)
+                done ;;
+        esac
+    done
+    (( ${#items[@]} )) || { ui_msg "Žádná položka k zálohování (chráněné disky se nenabízejí)."; return 1; }
+    case "$mode" in
+        disks) title="Disky k zálohování" ;;
+        parts) title="Oddíly k zálohování" ;;
+        *)     title="Disky a oddíly k zálohování" ;;
+    esac
+    while true; do
+        ui_checklist "$title" "Co zálohovat? Položku označ MEZERNÍKEM (objeví se [*]), pak Potvrdit. Lze označit i více položek." "${items[@]}" && return 0
+        (( UI_EMPTY )) || return 1
+        ui_msg "Nic není označené. V seznamu najeď na položku, stiskni MEZERNÍK (objeví se [*]) a potom Potvrdit výběr."
+    done
+}
+
+# Záloha z menu: backup_menu <disks|parts|both>
+backup_menu() {
+    local mode=$1 sep=0 name base
+    local -a it=()
+    backup_pick_items "$mode" || return 0
+    read -ra it <<<"$UI_REPLY"
+    # oddíly zálohovaných položek nesmí být místem pro uložení
+    local x c
+    SRC_EXCLUDE=""
+    for x in "${it[@]}"; do
+        if [[ "${BLK[$x.TYPE]:-}" == disk ]]; then
+            for c in $(blk_children "$x"); do SRC_EXCLUDE+=" $c"; done
+        else
+            SRC_EXCLUDE+=" $x"
+        fi
+    done
     src_select rw || return 0
-    disk_select_source "Disk k zálohování" || return 0
-    disk=$UI_REPLY
-    ui_input "Název obrazu" "img-$disk-$(date +%Y%m%d-%H%M)" || return 0
-    backup_disk_do "$disk" "$UI_REPLY"
+    ui_theme red
+    if (( ${#it[@]} > 1 )); then
+        ui_menu "Počet obrazů" "Vybráno: ${it[*]}. Jak to uložit?" \
+            one "Všechno do JEDNOHO obrazu (jako Clonezilla savedisk / saveparts)" \
+            sep "Každou položku do SAMOSTATNÉHO obrazu" || return 0
+        [[ "$UI_REPLY" == sep ]] && sep=1
+    fi
+    if (( sep )); then
+        base="img-$(date +%Y%m%d-%H%M)"
+        ui_input "Předpona názvů obrazů (vzniknou PŘEDPONA-${it[0]}, PŘEDPONA-${it[1]}…)" "$base" || return 0
+    else
+        base="img-$(IFS=-; echo "${it[*]}")-$(date +%Y%m%d-%H%M)"
+        ui_input "Název obrazu" "$base" || return 0
+    fi
+    name=$UI_REPLY
+    backup_run "$name" "$sep" "${it[@]}"
 }
 
-# 4) Vytvoření obrazu jednoho oddílu
-menu_04_backup_part() {
-    local p
-    src_select rw || return 0
-    part_select "Oddíl k zálohování" || return 0
-    p=$UI_REPLY
-    ui_input "Název obrazu" "img-$p-$(date +%Y%m%d-%H%M)" || return 0
-    backup_part_do "$p" "$UI_REPLY"
+# 3) Vytvoření obrazu disku (jednoho i více)
+menu_03_backup_disk() { backup_menu disks; }
+
+# 4) Vytvoření obrazu oddílů (jednoho i více, i z různých disků)
+menu_04_backup_part() { backup_menu parts; }
+
+# 3/3) Disky i oddíly dohromady
+menu_03_backup_mixed() { backup_menu both; }
+
+# Obsazené místo FS v bajtech (připojení jen pro čtení); prázdné, když to nejde
+fs_used_bytes() {
+    local dev=$1 fs=$2 m used
+    (( SIMULATE )) && return 0
+    [[ "$fs" == @(swap|"") ]] && return 0
+    m=$(mktemp -d)
+    if [[ "$fs" == ntfs ]]; then mount -t ntfs-3g -o ro "$dev" "$m" 2>/dev/null || { rmdir "$m"; return 0; }
+    else mount -o ro "$dev" "$m" 2>/dev/null || { rmdir "$m"; return 0; }; fi
+    used=$(df -B1 --output=used "$m" 2>/dev/null | tail -1 | tr -d ' ')
+    umount "$m"; rmdir "$m"
+    [[ "$used" =~ ^[0-9]+$ ]] && echo "$used"
+    return 0
 }
 
-# 5) Klon disk → disk
+# Načte zdrojový DISK pro klon do pole jako obraz: clone_load <pole> <disk>
+# Metadata (MBR, data za MBR, CHS) se jen přečtou do dočasné složky, data se čtou přímo z oddílů.
+clone_load() {
+    local -n _C=$1
+    local s=$2 n d pname first ver
+    _C=()
+    layout_parse_sfdisk "$1" < <(sys_sfdisk_dump "$s")
+    [[ -n "${_C[label]:-}" ]] || { ui_msg "Disk $s nemá tabulku oddílů."; return 1; }
+    d=$(mktemp -d "${STATE_DIR:-/tmp}/clone.XXXXXX")
+    if (( ! SIMULATE )); then
+        dd if="/dev/$s" of="$d/$s-mbr" bs=512 count=1 status=none 2>/dev/null || true
+        if [[ "${_C[label]}" == dos ]]; then
+            first=$(sys_sfdisk_dump "$s" | sed -nE 's/.*start= *([0-9]+).*/\1/p' | sort -n | head -1)
+            if [[ -n "$first" ]] && (( first > 1 )); then
+                dd if="/dev/$s" of="$d/$s-hidden-data-after-mbr" bs=512 skip=1 count=$(( first - 1 )) status=none 2>/dev/null || true
+            fi
+        fi
+        sfdisk -g "/dev/$s" 2>/dev/null | sed -nE 's/.*: ([0-9]+) cylinders, ([0-9]+) heads, ([0-9]+) sectors.*/cylinders=\1\nheads=\2\nsectors=\3/p' >"$d/$s-chs.sf" || true
+    fi
+    _C[src_disk]=$s _C[dir]=$d _C[disk_sectors]=$(( BLK[$s.SIZE] / _C[sector] ))
+    for n in ${_C[parts]}; do
+        pname=$(part_name "$s" "$n")
+        _C[$n.pname]=$pname _C[$n.dir]=$d
+        _C[$n.fs]=${BLK[$pname.FSTYPE]:-} _C[$n.label]=${BLK[$pname.LABEL]:-} _C[$n.fsuuid]=${BLK[$pname.UUID]:-}
+        _C[$n.img]="" _C[$n.imgtype]="" _C[$n.comp]="" _C[$n.used]="" _C[$n.fssize]="" _C[$n.fatbits]=""
+        if [[ -n "${_C[$n.fs]}" && "${_C[$n.fs]}" != swap ]]; then
+            _C[$n.img]=device
+            if sys_have "partclone.${_C[$n.fs]}"; then _C[$n.imgtype]="ptcl"; else _C[$n.imgtype]="dd"; fi
+            _C[$n.used]=$(fs_used_bytes "/dev/$pname" "${_C[$n.fs]}")
+        fi
+        if [[ "${_C[$n.fs]}" == vfat ]]; then
+            ver=""
+            (( SIMULATE )) || ver=$(blkid -p -s VERSION -o value "/dev/$pname" 2>/dev/null || true)
+            case "$ver" in FAT12) _C[$n.fatbits]=12 ;; FAT16) _C[$n.fatbits]=16 ;; *) _C[$n.fatbits]=32 ;; esac
+        fi
+    done
+    layout_classify "$1"
+    layout_detect_legacy "$1"
+    layout_min "$1"
+}
+
+# 5) Klon disk → disk – stejný průběh jako obnova z obrazu (zvětšení, zmenšení, režimy A–D, boot kód, hidden sectors)
 menu_05_clone() {
-    local s t n
+    local s t mode rc=0 summary
     disk_select_source "Zdrojový disk klonu" || return 0
     s=$UI_REPLY
-    SRC=()
-    layout_parse_sfdisk SRC < <(sys_sfdisk_dump "$s")
-    [[ -n "${SRC[label]}" ]] || { ui_msg "Disk $s nemá tabulku oddílů."; return 0; }
-    SRC[src_disk]=$s SRC[dir]="" SRC[disk_sectors]=$(( BLK[$s.SIZE] / SRC[sector] ))
-    for n in ${SRC[parts]}; do
-        SRC[$n.pname]=$(part_name "$s" "$n")
-        SRC[$n.fs]=${BLK[${SRC[$n.pname]}.FSTYPE]:-} SRC[$n.label]=${BLK[${SRC[$n.pname]}.LABEL]:-}
-        SRC[$n.img]=${SRC[$n.fs]:+device} SRC[$n.used]=""
-    done
-    layout_classify SRC; layout_detect_legacy SRC; layout_min SRC
-    IMAGES_DISK=$s   # zdroj nesmí být cílem
-    disk_select_target "Cílový disk klonu" || return 0
+    clone_load SRC "$s" || return 0
+    check_deps_image SRC
+    CLONE_SRC=$s   # zdroj nesmí být cílem
+    disk_select_target "Cílový disk klonu ($s → ?)" || return 0
     t=$UI_REPLY
+    [[ "${BLK[$t.SIZE]:-0}" -lt 64000000000 ]] && [[ "${SRC[mode]}" == legacy ]] && SMALL_MEDIA=1
     restore_choose_mode SRC || return 0
-    layout_compute SRC NEW "$t" "$UI_REPLY" || { layout_table SRC NEW | ui_text "Rozložení"; return "$E_SPACE"; }
-    layout_table SRC NEW | ui_text "Rozložení klonu $s → $t"
-    ui_confirm_disk "$t" "$(disk_summary "$t")" || return 0
-    local tbl
-    tbl=$(mktemp); layout_to_sfdisk NEW >"$tbl"
-    run wipefs -a "/dev/$t"
-    run_in "$tbl" sfdisk "/dev/$t"
-    rm -f "$tbl"
-    # shellcheck disable=SC2086  # seznam čísel oddílů se má rozdělit
-    disk_rescan "$t" ${NEW[parts]}
-    for n in ${SRC[parts]}; do
-        [[ -n "${SRC[$n.fs]}" && "${SRC[$n.fs]}" != swap ]] || continue
-        run_sh "partclone.${SRC[$n.fs]} -b -s /dev/${SRC[$n.pname]} -o /dev/$(part_name "$t" "$n")"
-        (( SIMULATE || DRY_RUN )) && sim_progress "Klon ${SRC[$n.pname]}"
-        (( NEW[$n.size] > SRC[$n.size] )) && fs_grow "${SRC[$n.fs]}" "/dev/$(part_name "$t" "$n")"
-    done
+    mode=$UI_REPLY
+    if [[ "$mode" == manual ]]; then
+        layout_compute SRC NEW "$t" last >/dev/null 2>&1 || true
+        layout_ask_sizes SRC NEW "$t" || rc=$?
+    else
+        layout_compute SRC NEW "$t" "$mode" || rc=$?
+    fi
+    layout_table SRC NEW | ui_text "Rozložení klonu $s → $t: původní → nové"
+    if (( rc == E_SPACE )); then
+        die "$E_SPACE" "Data z disku $s se na disk $t nevejdou. Nic nebylo zapsáno."
+    elif (( rc )); then
+        return "$E_USER"
+    fi
+    restore_check_tmp SRC NEW
+    summary=$(
+        disk_summary "$t"
+        echo
+        echo "Klon: /dev/$s → /dev/$t"
+        echo "Režim: $mode, $([[ "${SRC[mode]}" == legacy ]] && echo 'legacy (Beckhoff)' || echo obecný)"
+        echo
+        layout_table SRC NEW
+    )
+    ui_confirm_disk "$t" "$summary" || return 0
+    restore_execute SRC NEW "$t"
+    LAST_TARGET=$t
 }
 
 # Spuštění čtecího příkazu (ověření apod.) – v simulaci jen výpis
@@ -2595,7 +3061,7 @@ menu_main() {
         ui_menu "$title" "Flashka: ${LIVE_DISK:-?}, disk s obrazy: ${IMAGES_DISK:-nepřipojen}" \
             1 "Obnovit obraz na disk (automatický přepočet velikosti)" \
             2 "Obnovit jen vybrané oddíly z obrazu" \
-            3 "Vytvořit obraz (celý disk / jeden oddíl)  →" \
+            3 "Vytvořit obraz (disky / oddíly)  →" \
             4 "Klonovat disk → disk (s přepočtem velikosti)" \
             5 "Obraz: informace, ověření, prohlížení obsahu  →" \
             6 "Informace o discích (typ, výrobce, SMART, TRIM)" \
@@ -2607,11 +3073,13 @@ menu_main() {
             1) menu_action restore_disk ;;
             2) menu_action menu_02_restore_parts ;;
             3) ui_menu "Vytvořit obraz" "Formát kompatibilní s Clonezillou." \
-                   1 "Obraz celého disku" \
-                   2 "Obraz jednoho oddílu" || continue
+                   1 "Obraz disku (jednoho nebo více)" \
+                   2 "Obraz oddílů (jednoho nebo více)" \
+                   3 "Disky i oddíly dohromady" || continue
                case "$UI_REPLY" in
                    1) menu_action menu_03_backup_disk ;;
                    2) menu_action menu_04_backup_part ;;
+                   3) menu_action menu_03_backup_mixed ;;
                esac ;;
             4) menu_action menu_05_clone ;;
             5) ui_menu "Obraz" "" \
@@ -2786,25 +3254,66 @@ tmp_workdir() {
 
 # Bezpečné zvětšení FAT: nejdřív kopie obsahu do dočasného souboru, pak fatresize + kontrola;
 # když fatresize chybí, selže nebo kontrola neprojde, FAT se vytvoří znovu ze zálohy (stejné ID, typ, label).
-# fs_fat_rebuild <zařízení> <původní_bajty> <začátek_oddílu>
+# fs_fat_rebuild <zařízení> <původní_bajty> <začátek_oddílu> [fs]
 fs_fat_rebuild() {
-    local dev=$1 old=$2 start=$3 dir img l
+    local dev=$1 old=$2 start=$3 fs=${4:-vfat} dir img l used tool
     dir=$(tmp_workdir)
     img="$dir/restore-fat-$$.img"
-    run dd if="$dev" of="$img" bs=1M count=$(( (old + MiB - 1) / MiB )) conv=sparse status=none
-    if sys_have fatresize && run fatresize -s max "$dev" && run fsck.fat -n "$dev"; then
-        ok "FAT na $dev zvětšena přes fatresize."
-        run rm -f "$img"
-        return 0
-    fi
-    info "fatresize chybí nebo neuspěl – FAT na $dev se vytvoří znovu ze zálohy (stejné volume ID, typ FAT a label)."
+    used=$(fs_used_bytes "$dev" "$fs")
+    tool="partclone.vfat"; [[ "$fs" == exfat ]] && tool="partclone.exfat"
+    local fsname="FAT" usedh="?"
+    [[ "$fs" == exfat ]] && fsname="exFAT"
+    [[ -n "$used" ]] && usedh=$(human "$used")
+    info "Zvětšení $fsname na $dev: obsazená data ($usedh) se dočasně uloží do $dir, pak se $fsname vytvoří znovu přes celý oddíl a data se vrátí (stejné ID a label)."
+    run truncate -s "$old" "$img"
     loop_attach "$img"; l=$LOOP_LAST
-    fs_fat_copy "$l" "$dev" "$start"
+    # čtou se jen obsazené bloky (partclone), ne celý svazek
+    if sys_have "$tool"; then
+        step 1 3 "Záloha obsazených dat z $dev"
+        run_sh "$tool -c -q -s $dev -o - -L /tmp/partclone-fat.log 2>>/tmp/partclone-fat.log | $tool -r -s - -o $l -L /tmp/partclone-fat.log"
+    else
+        step 1 3 "Záloha svazku z $dev (dd)"
+        run dd if="$dev" of="$l" bs=4M count=$(( (old + 4 * MiB - 1) / (4 * MiB) )) conv=sparse status=progress
+    fi
+    step 2 3 "Nový $fsname přes celý oddíl $dev a kopie souborů"
+    if [[ "$fs" == exfat ]]; then fs_exfat_copy "$l" "$dev"; else fs_fat_copy "$l" "$dev" "$start"; fi
+    step 3 3 "Úklid dočasných dat"
     loop_detach "$l"
     run rm -f "$img"
 }
 
 # Nová FAT na cíli se stejným volume ID, labelem a typem FAT + kopie souborů + boot kód (kap. 5.7/8)
+# Kopie souborů mezi FAT / exFAT s průběhem: files_copy <zdroj> <cíl> [keep = nepřepisovat existující]
+files_copy() {
+    local src=$1 dst=$2 keep=${3:-}
+    if sys_have rsync; then
+        run rsync -rt --modify-window=2 --info=progress2 --no-inc-recursive ${keep:+--ignore-existing} "$src/" "$dst/"
+    else
+        run cp -r ${keep:+-n} --preserve=timestamps "$src/." "$dst/"
+    fi
+}
+
+# Nový exFAT přes celý cílový oddíl a kopie souborů (stejný label a sériové číslo):
+# fs_exfat_copy <zdroj> <cíl>
+fs_exfat_copy() {
+    local src=$1 dst=$2 uuid label ms md
+    if (( SIMULATE || DRY_RUN )); then
+        uuid="ABCD-1234" label=""
+    else
+        uuid=$(blkid -p -s UUID -o value "$src")
+        label=$(blkid -p -s LABEL -o value "$src")
+    fi
+    sys_have mkfs.exfat || die "$E_DEP" "Chybí mkfs.exfat (exfatprogs) – exFAT nelze vytvořit znovu."
+    run mkfs.exfat -q ${label:+-L "$label"} "$dst"
+    if [[ -n "$uuid" ]] && sys_have tune.exfat; then run tune.exfat -I "0x${uuid//-/}" "$dst"; fi
+    tmp_mount "$src" ro; ms=$TMP_LAST
+    tmp_mount "$dst" rw; md=$TMP_LAST
+    files_copy "$ms" "$md"
+    tmp_umount "$md"
+    tmp_umount "$ms"
+    info "exFAT na $dst vytvořen znovu přes celý oddíl (label ${label:--}, sériové číslo $uuid), soubory zkopírovány."
+}
+
 # fs_fat_copy <zdroj> <cíl> <začátek_oddílu_cíle>
 fs_fat_copy() {
     local src=$1 dst=$2 start=$3 uuid id label ver bits off cnt ms md
@@ -2828,10 +3337,21 @@ fs_fat_copy() {
     if (( ! SIMULATE && ! DRY_RUN )) && [[ -e "$ms/NK.BIN" || -e "$ms/nk.bin" ]]; then
         run cp --preserve=timestamps "$ms"/[Nn][Kk].[Bb][Ii][Nn] "$md"/
     fi
-    run cp -rn --preserve=timestamps "$ms/." "$md/"
+    files_copy "$ms" "$md" keep
+    # varování jen u FAT se systémem (Windows CE, DOS, zavaděč Windows) – u dat je to v pořádku
+    local sys="" f
+    if (( ! SIMULATE && ! DRY_RUN )); then
+        for f in "$md"/*; do
+            case "${f##*/}" in [Nn][Kk].[Bb][Ii][Nn]|[Ii][Oo].[Ss][Yy][Ss]|[Bb][Oo][Oo][Tt][Mm][Gg][Rr]|[Nn][Tt][Ll][Dd][Rr]) sys=${f##*/}; break ;; esac
+        done
+    fi
     tmp_umount "$md"
     tmp_umount "$ms"
-    warn "FAT na $dst byla vytvořena znovu (FAT$bits, ID $uuid). Atributy H/S souborů se nezachovají – ověř boot na zařízení."
+    if [[ -n "$sys" ]]; then
+        warn "FAT na $dst byla vytvořena znovu (FAT$bits, ID $uuid) a obsahuje systém ($sys) – atributy Skrytý/Systémový se nezachovají, ověř boot na zařízení."
+    else
+        ok "FAT na $dst vytvořena znovu přes celý oddíl (FAT$bits, ID $uuid, label ${label:--}), soubory zkopírovány."
+    fi
 }
 
 # Kopie souborů na nový FS se stejným UUID a LABEL (kap. 5.4/2 – XFS apod.)
@@ -2859,14 +3379,15 @@ restore_check_tmp() {
     local -n _S=$1 _N=$2
     local n needb=0 tdir avail
     for n in ${_N[parts]}; do
-        (( ${_N[$n.shrink]:-0} )) || continue
-        needb=$(( needb + ${_S[$n.used]:-$(( _S[$n.size] * _S[sector] ))} * 11 / 10 ))
+        if (( ${_N[$n.shrink]:-0} )) || { [[ "${_S[$n.fs]}" == @(vfat|fat*|exfat) && -n "${_S[$n.img]}" ]] && (( _N[$n.size] * _N[sector] > _S[$n.size] * _S[sector] )); }; then
+            needb=$(( needb + ${_S[$n.used]:-$(( _S[$n.size] * _S[sector] ))} * 11 / 10 ))
+        fi
     done
     (( needb )) || return 0
     tdir=${OPT_TMPDIR:-$PARTIMAG_MP}
     if (( SIMULATE )); then info "Zmenšení potřebuje cca $(human "$needb") dočasného místa v $tdir."; return 0; fi
     avail=$(df -B1 --output=avail "$tdir" 2>/dev/null | tail -1 | tr -d ' ')
-    info "Zmenšení potřebuje cca $(human "$needb") dočasného místa v $tdir (volno $(human "${avail:-0}"))."
+    info "Změna velikosti potřebuje cca $(human "$needb") dočasného místa v $tdir (volno $(human "${avail:-0}"))."
     if (( ${avail:-0} < needb )); then
         die "$E_SPACE" "V $tdir není dost místa pro dočasný soubor (chybí $(human $(( needb - ${avail:-0} )))). Zadej jiné místo přes --tmpdir. Nic nebylo zapsáno."
     fi
@@ -3074,28 +3595,46 @@ img_pick_disk() {
     ui_menu "Záloha obsahuje ${#disks[@]} disky" "Který disk ze zálohy?" "${items[@]}"
 }
 
-# Obnova jednoho disku ze zálohy: restore_one_disk <disk_v_záloze | @merge> [cíl]
+# Obnova na jeden cílový disk: restore_one_disk <cíl|""> <jednotka…>
+# Jedna jednotka = jeden disk ze zálohy; víc jednotek (i z různých záloh) se sloučí na tento jediný disk.
 restore_one_disk() {
-    local srcdisk=$1 tgt=$2 rc=0 mode why label
-    if [[ "$srcdisk" == "@merge" ]]; then
-        img_load_merged "$IMG_DIR" SRC "${MERGE_DISKS[@]}"
-        label="${MERGE_DISKS[*]}"
+    local tgt=$1 rc=0 mode why label u
+    local -a units=() names=()
+    shift
+    units=("$@")
+    if (( ${#units[@]} > 1 )); then
+        mapfile -t units < <(merge_order "${units[@]}")
+        for u in "${units[@]}"; do names+=("$(unit_name "$u")"); done
+        if img_disk_bootable "${units[0]%%|*}" "${units[0]#*|}"; then
+            info "Bootovací disk ze zálohy: ${names[0]} – jeho oddíl bude na cíli první (boot kód MBR, disk signature a aktivní příznak se převezmou z něj)."
+        else
+            warn "Žádný disk v záloze nemá bootovací oddíl – pořadí zůstává ${names[*]}."
+        fi
+        info "Pořadí oddílů na cílovém disku: ${names[*]}"
+        img_load_merged SRC "${units[@]}"
+        label="${names[*]}"
         label=${label// / + }
     else
-        img_load "$IMG_DIR" SRC "$srcdisk"
-        img_verify SRC || die "$E_GEN" "Obraz disku $srcdisk je neúplný – obnova není možná."
-        label=$srcdisk
+        u=${units[0]}
+        img_load "${u%%|*}" SRC "${u#*|}"
+        label=$(unit_name "$u")
+        img_verify SRC || die "$E_GEN" "Obraz disku $label je neúplný – obnova není možná."
     fi
     check_deps_image SRC
     img_info SRC
 
     ui_step "krok 3/6: cílový disk"
+    ui_theme red
     if [[ -n "$tgt" ]]; then
         [[ "${BLK[$tgt.TYPE]:-}" == disk ]] || die "$E_USER" "Cílový disk $tgt neexistuje."
         if why=$(disk_protect_reason "$tgt"); then die "$E_USER" "Disk $tgt nelze použít jako cíl: $why."; fi
     else
-        disk_select_target "Cílový disk pro $label ze zálohy ${IMG_DIR##*/}" || return "$E_USER"
-        tgt=$UI_REPLY
+        while true; do
+            disk_select_target "Cílový disk pro $label" || return "$E_USER"
+            tgt=$UI_REPLY
+            [[ " ${RESTORE_USED_TARGETS[*]} " == *" $tgt "* ]] || break
+            warn "Disk $tgt už je cílem jiné části obnovy – vyber jiný."
+        done
     fi
     [[ "${BLK[$tgt.SIZE]:-0}" -lt 64000000000 ]] && [[ "${SRC[mode]}" == legacy ]] && SMALL_MEDIA=1
 
@@ -3121,7 +3660,7 @@ restore_one_disk() {
     summary=$(
         disk_summary "$tgt"
         echo
-        echo "Obraz: ${IMG_DIR}   (disky ze zálohy: $label)"
+        echo "Obraz: ${SRC[dirs]:-${SRC[dir]}}   (zdroje: $label)"
         echo "Režim: $mode, $([[ "${SRC[mode]}" == legacy ]] && echo 'legacy (Beckhoff)' || echo obecný)"
         echo
         layout_table SRC NEW
@@ -3133,37 +3672,41 @@ restore_one_disk() {
     LAST_TARGET=$tgt
 }
 
-# Sloučení více disků ze zálohy do JEDNOHO rozložení: oddíly prvního disku zůstanou na místě,
+# Sloučení více zdrojů do JEDNOHO rozložení: oddíly prvního disku zůstanou na místě,
 # oddíly dalších disků se přidají za ně (nová čísla, zarovnané pozice, příznak appended=1).
-# img_load_merged <adresář> <pole> <disk1> <disk2>…
+# Zdroje mohou být z různých záloh. img_load_merged <pole> <jednotka1> <jednotka2>…
 img_load_merged() {
-    local dir=$1 arr=$2; shift 2
+    local arr=$1; shift
     local -n _M=$arr
-    local d k n m=0 pos=0 first=1 label1="" ss1="" mode=generic
+    local u dir d k n m=0 pos=0 first=1 label1="" ss1="" mode=generic uname dirs=""
+    local -a names=()
     declare -gA IMGTMP=()
     _M=()
-    for d in "$@"; do
+    for u in "$@"; do
+        dir=${u%%|*} d=${u#*|} uname=$(unit_name "$u")
+        names+=("$uname")
+        [[ "|$dirs|" == *"|$dir|"* ]] || dirs+="${dirs:+|}$dir"
         img_load "$dir" IMGTMP "$d"
-        img_verify IMGTMP || die "$E_GEN" "Obraz disku $d je neúplný – obnova není možná."
+        img_verify IMGTMP || die "$E_GEN" "Obraz disku $uname je neúplný – obnova není možná."
         if (( first )); then
             for k in label disk_id sector first_lba last_lba src_disk dir; do _M["$k"]=${IMGTMP["$k"]:-}; done
             label1=${IMGTMP[label]} ss1=${IMGTMP[sector]}
             _M[parts]=""
         else
-            [[ "${IMGTMP[label]}" == "$label1" ]] || die "$E_USER" "Disky v záloze mají různé tabulky oddílů (${label1} × ${IMGTMP[label]}) – sloučit na jeden disk nejde."
-            [[ "${IMGTMP[sector]}" == "$ss1" ]] || die "$E_USER" "Disky v záloze mají různou velikost sektoru – sloučit na jeden disk nejde."
+            [[ "${IMGTMP[label]}" == "$label1" ]] || die "$E_USER" "Zdroje mají různé tabulky oddílů (${label1} × ${IMGTMP[label]}, $uname) – sloučit na jeden disk nejde."
+            [[ "${IMGTMP[sector]}" == "$ss1" ]] || die "$E_USER" "Zdroje mají různou velikost sektoru ($uname) – sloučit na jeden disk nejde."
         fi
         [[ "${IMGTMP[mode]}" == legacy ]] && mode=legacy
         for n in ${IMGTMP[parts]}; do
             if (( ! first )) && [[ "${IMGTMP[$n.role]}" == extended ]] || { (( ! first )) && (( n >= 5 )) && [[ "$label1" == dos ]]; }; then
-                die "$E_USER" "Disk $d v záloze má rozšířený/logický oddíl – sloučení na jeden disk není podporováno."
+                die "$E_USER" "Zdroj $uname má rozšířený/logický oddíl – sloučení na jeden disk není podporováno."
             fi
             m=$(( m + 1 ))
             for k in "${!IMGTMP[@]}"; do
                 [[ "$k" == "$n".* ]] && _M[$m.${k#"$n".}]=${IMGTMP[$k]}
             done
             _M[$m.origstart]=${IMGTMP[$n.start]}
-            _M[$m.fromdisk]=$d
+            _M[$m.fromdisk]=$uname
             if (( first )); then
                 _M[$m.appended]=0
             else
@@ -3181,7 +3724,8 @@ img_load_merged() {
     fi
     if [[ "$label1" == gpt ]]; then _M[disk_sectors]=$(( pos + 34 )); else _M[disk_sectors]=$pos; fi
     _M[mode]=$mode
-    _M[merged]="$*"
+    _M[merged]="${names[*]}"
+    _M[dirs]=$dirs
 }
 
 # Režim C: velikost každého (rostoucího) oddílu zadá uživatel; oddíly se poskládají za sebe.
@@ -3275,15 +3819,16 @@ img_disk_bootable() {
     grep -qiE 'bootable|type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B|type=ef([^0-9a-f]|$)' "$f"
 }
 
-# Pořadí disků pro sloučení: bootovací disk vždy první (jeho oddíl bude č. 1, převezme boot kód a signaturu)
+# Pořadí zdrojů pro sloučení: bootovací disk vždy první (jeho oddíl bude č. 1, převezme boot kód a signaturu).
+# merge_order <jednotka…> → jednotky, každá na vlastním řádku
 merge_order() {
-    local dir=$1 d; shift
+    local u
     local -a boot=() rest=()
-    for d in "$@"; do
-        if img_disk_bootable "$dir" "$d"; then boot+=("$d"); else rest+=("$d"); fi
+    for u in "$@"; do
+        if img_disk_bootable "${u%%|*}" "${u#*|}"; then boot+=("$u"); else rest+=("$u"); fi
     done
-    (( ${#boot[@]} > 1 )) && warn "Bootovací oddíl mají disky ${boot[*]} – první bude ${boot[0]}."
-    echo "${boot[@]}" "${rest[@]}"
+    (( ${#boot[@]} > 1 )) && warn "Bootovací oddíl mají zdroje: $(for u in "${boot[@]}"; do printf '%s ' "$(unit_name "$u")"; done)– první bude $(unit_name "${boot[0]}")."
+    printf '%s\n' "${boot[@]}" "${rest[@]}"
 }
 
 # Záložní boot sektor NTFS (poslední sektor svazku) = kopie sektoru 0. partclone ho neobnovuje,
@@ -3298,10 +3843,16 @@ ntfs_sync_backup_boot() {
     [[ "$total" =~ ^[0-9]+$ ]] || return 0
     devsec=$(( $(blockdev --getsize64 "$dev") / 512 ))
     if (( total >= devsec )); then warn "NTFS na $dev je větší než oddíl – záložní boot sektor nelze zapsat."; return 0; fi
-    if ! cmp -s <(dd if="$dev" bs=512 count=1 status=none) <(dd if="$dev" bs=512 skip="$total" count=1 status=none); then
-        dd if="$dev" of="$dev" bs=512 count=1 seek="$total" conv=notrunc status=none
-        _log_file "záložní boot sektor NTFS na $dev zapsán (sektor $total)"
-    fi
+    # kopie patří za poslední sektor svazku; ntfsfix / ntfs-3g ji hledá na posledním sektoru oddílu –
+    # po zmenšení (svazek zarovnaný na clustery) se obě místa liší, proto se zapíše na obě
+    local s
+    for s in "$total" $(( devsec - 1 )); do
+        (( s > total )) && (( s >= devsec )) && continue
+        if ! cmp -s <(dd if="$dev" bs=512 count=1 status=none) <(dd if="$dev" bs=512 skip="$s" count=1 status=none); then
+            dd if="$dev" of="$dev" bs=512 count=1 seek="$s" conv=notrunc status=none
+            _log_file "záložní boot sektor NTFS na $dev zapsán (sektor $s)"
+        fi
+    done
     return 0
 }
 
@@ -3336,12 +3887,16 @@ main() {
         menu)        menu_main ;;
         restore)     restore_disk ;;
         list-disks)  disk_table ;;
-        save-disk)
+        save)
+            local it
+            for it in "${OPT_SAVE_DISKS[@]}"; do
+                [[ "${BLK[$it.TYPE]:-}" == disk ]] || die "$E_USER" "--save-disk: '$it' není disk (oddíly patří do --save-part)."
+            done
+            for it in "${OPT_SAVE_PARTS[@]}"; do
+                [[ "${BLK[$it.TYPE]:-}" == part ]] || die "$E_USER" "--save-part: '$it' není oddíl (disky patří do --save-disk)."
+            done
             src_select rw || exit "$E_USER"
-            backup_disk_do "$OPT_SAVE" "${OPT_NAME:-img-$OPT_SAVE-$(date +%Y%m%d-%H%M)}" ;;
-        save-part)
-            src_select rw || exit "$E_USER"
-            backup_part_do "$OPT_SAVE" "${OPT_NAME:-img-$OPT_SAVE-$(date +%Y%m%d-%H%M)}" ;;
+            backup_run "$OPT_NAME" "$OPT_SEPARATE" "${OPT_SAVE_DISKS[@]}" "${OPT_SAVE_PARTS[@]}" ;;
         list-images)
             local base=${OPT_IMAGE:-}
             if [[ -z "$base" ]]; then src_select ro || exit "$E_USER"; base=$(partimag_dir); fi

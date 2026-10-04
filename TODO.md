@@ -1,6 +1,6 @@
 # TODO – co ještě nebylo vyzkoušeno a možné upgrady
 
-Stav k verzi 1.1.0 (2. 10. 2026). Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
+Stav k verzi 1.2.7 (4. 10. 2026). Navíc `test/test-matrix.sh`: 52 kombinací do 3 TB, 472 kontrol. Ověřeno: `test/test-loop.sh` (185 kontrol na skutečných datech),
 `test/test-sim.sh` (39 kontrol) a ručně ve VMware + Clonezilla 3.3.3-37 obnova záloh Beckhoff CF
 (1 karta i 2 karty → jeden SSD).
 
@@ -16,10 +16,18 @@ Stav k verzi 1.1.0 (2. 10. 2026). Ověřeno: `test/test-loop.sh` (185 kontrol na
 - [ ] Clonezilla na **reálném počítači** (ne VM): konzole 80×25, framebuffer, česká klávesnice (Y/Z)
 - [ ] Kopie logu do `restore-logs/` na flashce, když Clonezilla bootuje z flashky (`/run/live/medium`)
 
+- [ ] **Barvy oken** (zdroj zelená, cíl červená) ve VM s `dialog` – v testech jsou ověřené jen soubory motivu a plain režim
+- [ ] **Flashka** upravená `vm/make-flash.sh` (BIOS i UEFI menu): ověřit boot na skutečném počítači – BIOS / legacy i UEFI
+      (UEFI úprava `boot/grub/grub.cfg` je zkoušená jen na kopii souboru)
+- [ ] Čeština s diakritikou na konzoli Clonezilly (teď se zobrazuje bez háčků a čárek)
+
 ## 2. Funkce ověřené jen v simulaci (ostře nespuštěné)
 
 - [ ] Menu 2 – obnova vybraných oddílů na existující oddíly
-- [ ] Menu 3/2 – záloha jednoho oddílu (`--save-part`)
+- [ ] Menu 3 (3/1, 3/2, 3/3) – interaktivní výběr disků a oddílů ve VM s Clonezillou (příkazový řádek `--save-disk`
+      / `--save-part` / `--separate` je ověřený na loop discích, menu jen v simulaci)
+- [ ] Menu 1 – *Více záloh najednou* a *Vlastní rozdělení* ve VM (parametry `--image A,B`, `--groups` jsou ověřené na loop discích)
+- [ ] Menu 2 – opakování obnovy vybraných oddílů z dalšího disku / další zálohy
 - [ ] Menu 4 – klon disk → disk
 - [ ] Menu 5/2 – prohlížení obsahu zálohy (obnova do dočasného souboru + mount)
 - [ ] Menu 8 – kontrola FS, opravy bootu (EFI záznamy `efibootmgr`, GRUB přes chroot, MBR kód, `sgdisk -e`)
@@ -30,7 +38,11 @@ Stav k verzi 1.1.0 (2. 10. 2026). Ověřeno: `test/test-loop.sh` (185 kontrol na
 
 ## 3. Formáty a souborové systémy
 
-- [ ] **Obraz vytvořený skriptem obnovit standardní Clonezillou** (kritérium přijetí ze zadání)
+- [ ] **Obraz vytvořený skriptem obnovit standardní Clonezillou** (kritérium přijetí ze zadání) – jednodiskový i
+      vícediskový (`--save-disk sda,sdb`, soubory `disk` a `parts` se všemi disky) a obraz jen vybraných oddílů (`restoreparts`)
+- [ ] FAT / exFAT se při zvětšení / zmenšení vytváří znovu (kopie souborů): mění se pořadí souborů a FAT ztrácí atributy H/S
+      – ověřit boot Windows CE / DOS z takto zvětšené FAT
+- [ ] Odhad minima ext4 z obrazu je přísný (metadata se počítají jako data) – velký prázdný ext4 na malý disk se odmítne
 - [ ] Starší obrazy `ntfsclone` (`*.ntfs-img.*`) a `dd` (`*.dd-img.*`)
 - [ ] Komprese `gz`, `xz`, `bz2`, `lz4`, `lzo` ostře (ostře ověřeno jen `zstd`)
 - [ ] Data rozdělená do více souborů (`.aa`, `.ab`, …) ostře – obrazy nad 4 GiB
@@ -45,7 +57,9 @@ Stav k verzi 1.1.0 (2. 10. 2026). Ověřeno: `test/test-loop.sh` (185 kontrol na
 
 - [ ] Editor oddílů: vytvoření nového oddílu (`mkfs` + LABEL), změna typu oddílu
 - [ ] Nastavení geometrie CHS při zápisu tabulky (teď se jen porovná a upozorní)
-- [ ] Záloha **dvou disků do jedné zálohy** (jako Clonezilla `savedisk sda sdb`)
+- [ ] Obnova ve více krocích: nejdřív zvolit všechny cíle a potvrdit je, teprve potom zapisovat (teď se zapisuje na
+      první cíl před dotazem na druhý; parametry `--target` / `--yes-i-know` se kontrolují předem všechny)
+- [ ] Obnova oddílů z obrazu jen vybraných oddílů jako celého disku (teď se odmítne, jde jen menu 2)
 - [ ] `--sizes` i pro obnovu „každý disk zvlášť“
 - [ ] Průběh partclone v okně dialogu (gauge) místo textového výpisu
 - [ ] Tabulky a souhrny vyzkoušet a případně zúžit pro konzoli 80 sloupců

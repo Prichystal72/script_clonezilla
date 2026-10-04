@@ -2,13 +2,13 @@
 # Testy na loop discích se skutečnými daty (kap. 10.2).
 # Potřebuje Linux s rootem (WSL2 / VM). Pracuje JEN se soubory v $W – žádný skutečný disk.
 # Spuštění:  sudo bash test/test-loop.sh            (celé)
-#            sudo bash test/test-loop.sh legacy     (jen část: backup restore dryrun editor legacy)
+#            sudo bash test/test-loop.sh legacy     (jen část: backup restore dryrun editor legacy merge multi clone)
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 W=/var/tmp/restore-test
 R=(bash "$ROOT/restore.sh" --allow-loop --ui plain)
-PARTS="${1:-backup restore dryrun editor legacy}"
+PARTS="${1:-backup restore dryrun editor legacy merge multi clone}"
 PASS=0 FAIL=0 RUNNO=0
 
 [[ ${EUID:-$(id -u)} == 0 ]] || { echo "Spusť jako root (sudo)."; exit 2; }
@@ -365,6 +365,169 @@ mkloop TGT merge-tiny 300M
 rs merge-tiny --source-dev "$IMGP" --image TWO --target "${TGT#/dev/}" --mode last --yes-i-know "${TGT#/dev/}"
 check "sloučení na 300M: nevejde se → kód 4" [ "$RC" = 4 ] || showlog
 dropl "$TGT"; dropl "$CA"; dropl "$CB"
+fi
+# =============================================================================
+if [[ " $PARTS " == *" multi "* ]]; then
+echo "== 9) Záloha a obnova z VÍCE disků a VÍCE záloh (kombinace)"
+mkcf() { printf 'label: dos\nlabel-id: %s\nunit: sectors\n\nstart=63, type=7%s\n' "$1" "$2" | sfdisk -q "$3"; }
+mkc2() { printf 'label: dos\nlabel-id: %s\nunit: sectors\n\nstart=2048, size=300000, type=83\nstart=304048, type=83\n' "$1" | sfdisk -q "$2"; }
+mkloop MA mua 1G mkcf 0x6df0d34f ", bootable"
+mkloop MB mub 600M mkcf 0x1a2b3c4d ""
+mkloop MC muc 400M mkc2 0x77665544
+mkfs.ntfs -Q -q -p 63 -H 255 -S 63 -L SYS "${MA}p1" 2>/dev/null
+mkfs.ntfs -Q -q -p 63 -H 255 -S 63 -L DATA "${MB}p1" 2>/dev/null
+mkfs.ext4 -q -L C1 "${MC}p1"; mkfs.ext4 -q -L C2 "${MC}p2"
+mount -t ntfs-3g "${MA}p1" "$W/mnt"; head -c 30M /dev/urandom >"$W/mnt/sys.bin"; echo "[boot loader]" >"$W/mnt/boot.ini"; umount "$W/mnt"
+mount -t ntfs-3g "${MB}p1" "$W/mnt"; head -c 15M /dev/urandom >"$W/mnt/data.bin"; umount "$W/mnt"
+mount "${MC}p1" "$W/mnt"; head -c 20M /dev/urandom >"$W/mnt/c1.bin"; umount "$W/mnt"
+mount "${MC}p2" "$W/mnt"; head -c 25M /dev/urandom >"$W/mnt/c2.bin"; umount "$W/mnt"
+SA=$(fsums "${MA}p1"); SB=$(fsums "${MB}p1"); SC1=$(fsums "${MC}p1"); SC2=$(fsums "${MC}p2")
+a=${MA#/dev/}; b=${MB#/dev/}; c=${MC#/dev/}
+
+# --- A) víc disků do JEDNOHO obrazu (jako Clonezilla savedisk sda sdb)
+rs mu-both --source-dev "$IMGP" --save-disk "$a,$b" --name BOTH
+check "A: --save-disk a,b do jednoho obrazu: kód 0" [ "$RC" = 0 ] || showlog
+mount -o ro "${IMG}p1" "$W/mnt"; D="$W/mnt/BOTH"
+check "A: disk = '$a $b'" [ "$(cat "$D/disk")" = "$a $b" ]
+check "A: parts = '${a}p1 ${b}p1'" [ "$(cat "$D/parts")" = "${a}p1 ${b}p1" ]
+for x in "$a" "$b"; do
+    for f in "$x-pt.sf" "$x-pt.parted" "$x-mbr" "${x}p1.ntfs-ptcl-img.zst.aa"; do check "A: obraz obsahuje $f" [ -s "$D/$f" ]; done
+done
+check "A: blkid.list má oba disky" bash -c "grep -q '/dev/${a}p1' '$D/blkid.list' && grep -q '/dev/${b}p1' '$D/blkid.list'"
+check "A: dev-fs.list má oba disky" bash -c "grep -q '/dev/${a}p1' '$D/dev-fs.list' && grep -q '/dev/${b}p1' '$D/dev-fs.list'"
+check "A: SHA1SUMS sedí" bash -c "cd '$D' && sha1sum -c --quiet SHA1SUMS"
+umount "$W/mnt"
+rs mu-list --source-dev "$IMGP" --list-images
+check "A: --list-images ukáže 2 disky" grep -q '2 disky' "$LAST_LOG"
+
+# obnova: oba disky na JEDEN cíl
+mkloop T1 mut1 3G
+rs mu-A1 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/}" --mode last --yes-i-know "${T1#/dev/}"
+check "A→1 disk: kód 0" [ "$RC" = 0 ] || showlog
+check "A→1 disk: bootovací disk první, start 63" [ "$(pstart "$T1" "${T1}p1")" = 63 ]
+check "A→1 disk: soubory obou oddílů" [ "$(fsums "${T1}p1")/$(fsums "${T1}p2")" = "$SA/$SB" ]
+dropl "$T1"
+# obnova: každý disk na SVŮJ cíl
+mkloop T1 mut1 2G; mkloop T2 mut2 2G
+rs mu-A2 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/},${T2#/dev/}" --mode last --yes-i-know "${T1#/dev/},${T2#/dev/}"
+check "A→2 disky: kód 0" [ "$RC" = 0 ] || showlog
+check "A→2 disky: soubory (1. cíl = $a, 2. cíl = $b)" [ "$(fsums "${T1}p1")/$(fsums "${T2}p1")" = "$SA/$SB" ]
+dropl "$T1"; dropl "$T2"
+
+# --- B) víc disků do SAMOSTATNÝCH obrazů (--separate) a obnova z více obrazů
+rs mu-sep --source-dev "$IMGP" --save-disk "$a,$b" --separate --name SEP
+check "B: --separate: kód 0" [ "$RC" = 0 ] || showlog
+mount -o ro "${IMG}p1" "$W/mnt"
+check "B: vznikl obraz SEP-$a" [ "$(cat "$W/mnt/SEP-$a/disk" 2>/dev/null)" = "$a" ]
+check "B: vznikl obraz SEP-$b" [ "$(cat "$W/mnt/SEP-$b/disk" 2>/dev/null)" = "$b" ]
+umount "$W/mnt"
+mkloop T1 mut1 3G
+rs mu-B1 --source-dev "$IMGP" --image "SEP-$a,SEP-$b" --target "${T1#/dev/}" --mode last --yes-i-know "${T1#/dev/}"
+check "B→1 disk (2 obrazy sloučeny): kód 0" [ "$RC" = 0 ] || showlog
+check "B→1 disk: soubory obou obrazů" [ "$(fsums "${T1}p1")/$(fsums "${T1}p2")" = "$SA/$SB" ]
+check "B→1 disk: start 63 + disk signature 1. obrazu" [ "$(pstart "$T1" "${T1}p1")" = 63 -a "$(dd if="$W/mut1.img" bs=1 skip=440 count=4 status=none | od -An -tx1 | tr -d ' ')" = "4fd3f06d" ]
+dropl "$T1"
+mkloop T1 mut1 2G; mkloop T2 mut2 2G
+rs mu-B2 --source-dev "$IMGP" --image "SEP-$a,SEP-$b" --target "${T1#/dev/},${T2#/dev/}" --mode last --yes-i-know "${T1#/dev/},${T2#/dev/}"
+check "B→2 disky (každý obraz na svůj cíl): kód 0" [ "$RC" = 0 ] || showlog
+check "B→2 disky: soubory" [ "$(fsums "${T1}p1")/$(fsums "${T2}p1")" = "$SA/$SB" ]
+dropl "$T1"; dropl "$T2"
+
+# --- C) disk s 2 oddíly: celý disk i jen jeden vybraný oddíl; kombinace disk + oddíl jiného disku
+rs mu-c --source-dev "$IMGP" --save-disk "$c" --name CFULL
+check "C: záloha disku se 2 oddíly: kód 0" [ "$RC" = 0 ] || showlog
+rs mu-mix --source-dev "$IMGP" --save-disk "$a" --save-part "${c}p2" --name MIX
+check "C: disk + oddíl jiného disku: kód 0" [ "$RC" = 0 ] || showlog
+mount -o ro "${IMG}p1" "$W/mnt"; D="$W/mnt/MIX"
+check "C: MIX disk = '$a $c'" [ "$(cat "$D/disk")" = "$a $c" ]
+check "C: MIX parts = '${a}p1 ${c}p2' (jen vybraný oddíl)" [ "$(cat "$D/parts")" = "${a}p1 ${c}p2" ]
+check "C: MIX nemá data ${c}p1" bash -c "! compgen -G '$D/${c}p1.*-img*'"
+check "C: MIX má tabulku disku $c" [ -s "$D/$c-pt.sf" ]
+umount "$W/mnt"
+mkloop T1 mut1 2G
+rs mu-mix-a --source-dev "$IMGP" --image MIX --source-disk "$a" --target "${T1#/dev/}" --mode last --yes-i-know "${T1#/dev/}"
+check "C: z MIX jde obnovit celý disk $a" [ "$RC" = 0 ] || showlog
+dropl "$T1"; mkloop T1 mut1 2G
+rs mu-mix-c --source-dev "$IMGP" --image MIX --source-disk "$c" --target "${T1#/dev/}" --mode last --yes-i-know "${T1#/dev/}"
+check "C: z MIX NEJDE obnovit celý disk $c (jen vybraný oddíl) → kód 1" [ "$RC" = 1 ]
+check "C: hláška vysvětluje, že obraz má jen vybrané oddíly" grep -q 'jen vybrané oddíly' "$LAST_LOG"
+check "C: cílový disk zůstal nedotčený" [ "$(blkid -c /dev/null -s PTTYPE -o value "$T1" 2>/dev/null)" = "" ]
+dropl "$T1"
+
+# --- D) libovolné seskupení zdrojů z různých obrazů: (BOTH:a + CFULL:c) → cíl 1, BOTH:b → cíl 2
+mkloop T1 mut1 3G; mkloop T2 mut2 2G
+rs mu-grp --source-dev "$IMGP" --image BOTH,CFULL --groups "BOTH:$a+CFULL:$c,BOTH:$b" \
+    --target "${T1#/dev/},${T2#/dev/}" --mode last --yes-i-know "${T1#/dev/},${T2#/dev/}"
+check "D: skupiny (a+c → cíl 1, b → cíl 2): kód 0" [ "$RC" = 0 ] || showlog
+check "D: cíl 1 = a(p1) + c(p2,p3), start 63" [ "$(pstart "$T1" "${T1}p1")" = 63 -a -b "${T1}p3" ]
+check "D: cíl 1: soubory a, c1, c2" [ "$(fsums "${T1}p1")/$(fsums "${T1}p2")/$(fsums "${T1}p3")" = "$SA/$SC1/$SC2" ]
+check "D: cíl 2: soubory b" [ "$(fsums "${T2}p1")" = "$SB" ]
+dropl "$T1"; dropl "$T2"
+
+# --- E) chyby se musí ukázat PŘED zápisem
+mkloop T1 mut1 2G; mkloop T2 mut2 2G
+rs mu-e1 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/},${T1#/dev/}" --mode last --yes-i-know "${T1#/dev/}"
+check "E: stejný cíl dvakrát → kód 2" [ "$RC" = 2 ]
+rs mu-e2 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/},${T2#/dev/}" --mode last --yes-i-know "${T1#/dev/}"
+check "E: --yes-i-know nepokrývá všechny cíle → kód 2 a nic nezapsáno" [ "$RC" = 2 -a -z "$(blkid -c /dev/null -s PTTYPE -o value "$T1" 2>/dev/null)" ]
+rs mu-e3 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/},loop999" --mode last --yes-i-know "${T1#/dev/},loop999"
+check "E: neexistující 2. cíl → kód 2 a 1. cíl nezapsán" [ "$RC" = 2 -a -z "$(blkid -c /dev/null -s PTTYPE -o value "$T1" 2>/dev/null)" ]
+rs mu-e4 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/},${T2#/dev/}" --groups "$a,$a" --mode last
+check "E: zdroj ve skupinách dvakrát → kód 2" [ "$RC" = 2 ]
+rs mu-e5 --source-dev "$IMGP" --image BOTH --target "${T1#/dev/}" --groups "$a,$b" --mode last
+check "E: 2 skupiny, 1 cíl → kód 2" [ "$RC" = 2 ]
+rs mu-e6 --source-dev "$IMGP" --save-disk "${a}p1"
+check "E: --save-disk s oddílem → kód 2" [ "$RC" = 2 ]
+rs mu-e7 --source-dev "$IMGP" --save-part "$a"
+check "E: --save-part s diskem → kód 2" [ "$RC" = 2 ]
+rs mu-e8 --source-dev "$IMGP" --save-disk "$a,$b" --separate --name SEP
+check "E: existující název při --separate → kód 2" [ "$RC" = 2 ]
+mount -o ro "${IMG}p1" "$W/mnt"
+check "E: --separate s existujícím názvem nezapsal nic navíc" [ "$(find "$W/mnt" -maxdepth 1 -name 'SEP-*' | wc -l)" = 2 ]
+umount "$W/mnt"
+rs mu-e9 --source-dev "$IMGP" --save-disk "$a,$b" --separate --name NEW1
+check "E: --separate NEW1 vytvoří NEW1-$a i NEW1-$b" [ "$RC" = 0 ]
+mkloop T3 mut3 1G
+rs mu-e10 --source-dev "$IMGP" --image "SEP-$a,NEW1-$a" --source-disk "$a" --target "${T3#/dev/}" --mode last --yes-i-know "${T3#/dev/}"
+check "E: dva obrazy se stejným diskem a --source-disk $a → nejednoznačné, kód 2" [ "$RC" = 2 ]
+check "E: hláška žádá OBRAZ:disk" grep -q 'OBRAZ:disk' "$LAST_LOG"
+rs mu-e11 --source-dev "$IMGP" --image "SEP-$a,NEW1-$a" --groups "SEP-$a:$a,NEW1-$a:$a" \
+    --target "${T1#/dev/},${T2#/dev/}" --mode last --yes-i-know "${T1#/dev/},${T2#/dev/}"
+check "E: totéž s OBRAZ:disk → 2 cíle, kód 0" [ "$RC" = 0 ] || showlog
+dropl "$T1"; dropl "$T2"; dropl "$T3"; dropl "$MA"; dropl "$MB"; dropl "$MC"
+fi
+# =============================================================================
+if [[ " $PARTS " == *" clone "* ]]; then
+echo "== 10) Klon disk → disk: FAT32 se musí zvětšit na celý oddíl sám"
+mkdosf() { printf 'label: dos
+label-id: 0x12345678
+unit: sectors
+
+start=8192, type=c
+' | sfdisk -q "$1"; }
+mkloop CS clone-src 200M mkdosf
+mkloop CT clone-dst 600M
+mkfs.vfat -F32 -n SRC "${CS}p1" >/dev/null
+mount "${CS}p1" "$W/mnt"; head -c 20M /dev/urandom >"$W/mnt/a.bin"; umount "$W/mnt"
+CSUM=$(fsums "${CS}p1")
+cs=${CS#/dev/}; ct=${CT#/dev/}
+si=$(lsblk -dnro NAME | grep -vE '^(sr|zram|ram|fd)' | grep -n "^${cs}\$" | cut -d: -f1)
+ti=$(lsblk -dnro NAME | grep -vE '^(sr|zram|ram|fd)' | grep -n "^${ct}\$" | cut -d: -f1)
+STDIN="4
+${si}
+${ti}
+1
+${ct}
+0
+"
+rs clone-fat --source-dev "$IMGP"
+STDIN=""
+check "klon FAT32: kód 0" [ "$RC" = 0 ] || showlog
+check "klon FAT32: oddíl zabírá celý cíl" [ "$(psize "${CT}p1")" -gt $(( 590 * 1048576 )) ]
+check "klon FAT32: soubory shodné" [ "$(fsums "${CT}p1")" = "$CSUM" ]
+check "klon FAT32: FS vyplňuje oddíl (df)" bash -c "mount -o ro ${CT}p1 $W/mnt && [ \$(df -B1M --output=size $W/mnt | tail -1) -gt 560 ]; r=\$?; umount $W/mnt; exit \$r"
+check "klon FAT32: fsck.vfat čistý" fsck.vfat -n "${CT}p1"
+dropl "$CS"; dropl "$CT"
 fi
 echo
 echo "Výsledek: $PASS OK, $FAIL chyb   (logy: $W/logs)"
