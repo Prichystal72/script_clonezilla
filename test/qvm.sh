@@ -67,6 +67,7 @@ case "${1:-}" in
                 [A-Z])    ks+=("shift-${c,,}") ;;
                 ' ') ks+=(spc) ;; '-') ks+=(minus) ;; '.') ks+=(dot) ;; '/') ks+=(slash) ;;
                 '_') ks+=(shift-minus) ;; ':') ks+=(shift-semicolon) ;; ',') ks+=(comma) ;; '=') ks+=(equal) ;;
+                '"') ks+=(shift-apostrophe) ;; "'") ks+=(apostrophe) ;;
                 *) echo "neznámý znak '$c'"; exit 2 ;;
             esac
         done

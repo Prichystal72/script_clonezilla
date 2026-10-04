@@ -422,6 +422,10 @@ Matice u každého případu kontroluje: oddíl i souborový systém vyplňují 
   Clonezillou (obnova obrazu vytvořeného skriptem) zatím ne – viz `TODO.md`.
 - Ve VMware Playeru: ISO s automatickým startem (`vm/make-vm-iso.sh`) otevře `restore.sh` bez dotazů, ve větším okně
   1024×768 a s větším písmem.
+- **Kompatibilita se standardní Clonezillou:** zálohy vytvořené skriptem (MBR FAT32 + NTFS, dva disky v jedné
+  záloze, GPT EFI + ext4) obnovila Clonezilla 3.3.3 sama (`ocs-sr restoredisk`, bez skriptu) – tabulky, UUID,
+  popisky i soubory shodné. Clonezilla u bootovacího oddílu FAT po obnově mění typ `c` → `b` a maže popisek
+  v boot sektoru – stejně i u vlastních záloh, nejde o rozdíl ve formátu.
 - Neověřeno na skutečném hardwaru: oprava EFI záznamů, reinstalace GRUB, převod MBR ↔ GPT,
   NVMe format / ATA secure erase – používej nejdřív s `--dry-run`.
 

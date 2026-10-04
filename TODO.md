@@ -38,8 +38,8 @@ Stav k verzi 1.2.11 (4. 10. 2026). Navíc `test/test-matrix.sh`: 61 kombinací d
 
 ## 3. Formáty a souborové systémy
 
-- [ ] **Obraz vytvořený skriptem obnovit standardní Clonezillou** (kritérium přijetí ze zadání) – jednodiskový i
-      vícediskový (`--save-disk sda,sdb`, soubory `disk` a `parts` se všemi disky) a obraz jen vybraných oddílů (`restoreparts`)
+- [x] **Obraz vytvořený skriptem obnovit standardní Clonezillou** – ověřeno 4. 10. 2026 (QEMU, Clonezilla 3.3.3,
+      `ocs-sr restoredisk`): MBR FAT32 + NTFS, dva disky v jedné záloze, GPT; obraz jen vybraných oddílů (`restoreparts`) zatím ne
 - [ ] FAT / exFAT se při zvětšení / zmenšení vytváří znovu (kopie souborů): mění se pořadí souborů a FAT ztrácí atributy H/S
       – ověřit boot Windows CE / DOS z takto zvětšené FAT
 - [ ] Odhad minima ext4 z obrazu je přísný (metadata se počítají jako data) – velký prázdný ext4 na malý disk se odmítne
