@@ -122,6 +122,8 @@
  Intel ICH7R SATA, rezim RAID  8086:27c3   ahci           sachta pro 2,5" disk
 
  Deska: Intel 945GM, BIOS PhoenixAward 6.00 PG (10. 2. 2011).
+ Panely vyrobene 2011 a 2013, cipset 945GM / ICH7R je ale z let 2005-2006
+ (doba SATA 1/2) - prumyslove PC pouzivaji overene cipsety dlouho.
 
 ------------------------------------------------------------------------------
  POZNAMKY
