@@ -28,6 +28,12 @@ Stav k verzi 1.2.14 (4. 10. 2026). Regrese prošla i uvnitř 32bitové Clonezill
 - [ ] **Barvy oken** (zdroj zelená, cíl červená) ve VM s `dialog` – v testech jsou ověřené jen soubory motivu a plain režim
 - [ ] **Flashka** upravená `vm/make-flash.sh` (BIOS i UEFI menu): ověřit boot na skutečném počítači – BIOS / legacy i UEFI
       (v QEMU ověřeno 4. 10. 2026 na kopii flashky s Clonezillou 3.1.0-22 i686: BIOS i UEFI, automatický start, klon)
+- [ ] **Flashka na panelu: grafika a pomalý start** (5. 10. 2026, CP6201). Podezřelé:
+      - menu bootu čeká `timeout 300` (30 s), než samo spustí výchozí položku – zkrátit (např. 5 s) v `patch-syslinux.py` / `patch-grub.py`
+      - hlášení „undefined video mode 317“ čekalo ~30 s – opraveno `vga=normal` v našich položkách, ověřit na panelu,
+        jestli je konzole čitelná (rozlišení, velikost písma Terminus 24x12 při 800x600 panelu)
+      - `disk_check_internal`: při řadiči bez ovladače nebo jen USB discích čeká až 6× (`udevadm settle` + 1 s)
+      - změřit: do diagnostiky v logu přidat `/proc/uptime` při startu skriptu a `systemd-analyze blame`
 - [ ] UEFI s **32bitovým firmwarem** (některé tablety / panely) – flashka má `bootia32.efi`, neověřeno
 - [ ] Čeština s diakritikou na konzoli Clonezilly (teď se zobrazuje bez háčků a čárek)
 

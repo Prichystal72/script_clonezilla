@@ -1,0 +1,127 @@
+==============================================================================
+ VYMENA CF + HDD ZA SSD V PANELU BECKHOFF CP6201          technicky zaznam
+ 5. 10. 2026
+==============================================================================
+ Panel:   Beckhoff CP6201-xxxx-0010, Windows XP
+ Obnova:  restore.sh 1.2.15, flashka s Clonezillou 3.1.0-22 (32 bit)
+
+------------------------------------------------------------------------------
+ ZAVER
+------------------------------------------------------------------------------
+ * SSD ADATA SU650 120 GB panel NEVIDI VUBEC (BIOS, Clonezilla ani XP).
+ * SSD ADATA SU650 512 GB FUNGUJE, system z nej nabootoval.
+ * Pod stejnym nazvem SU650 jsou uvnitr dva ruzne radice s ruznym firmwarem.
+   Verze ve 120GB kusech nenavaze spojeni se starym radicem SATA v panelu
+   (Intel ICH7R). Deje se to v hardwaru pri navazovani linky, takze to
+   nespravi nastaveni BIOSu, ovladac ani jiny firmware.
+
+------------------------------------------------------------------------------
+ VYSLEDEK MIGRACE NA 512GB SSD
+------------------------------------------------------------------------------
+ Oddil        Zdroj           Na SSD                          Data    Windows
+ -----------  --------------  ------------------------------  ------  -------
+ System XP    CF karta 3,8GB  sda1  16,4 GB, zacatek sekt. 63 2,0 GB  C:
+ Data Daten   HDD 74,5 GB     sda2  460,5 GB                  4,9 GB  D:
+
+ * Obnova ze spolecne zalohy obou disku (menu 1, "sloucit na jeden disk")
+   trvala 4 minuty, bez chyby.
+ * XP nabootoval z SSD bez CF karty. Po prvnim startu jeden automaticky
+   restart (NT AUTHORITY\SYSTEM), pak uz start normalne.
+ * Pismena C: a D: zustala jako na puvodni sestave.
+ * NEOVERENO: beh TwinCAT na nove sestave.
+
+------------------------------------------------------------------------------
+ CO BYLO VYZKOUSENO SE 120GB SSD
+------------------------------------------------------------------------------
+ Pokus                                                       Vysledek
+ ----------------------------------------------------------  ----------------
+ Dva nove kusy SU650 120 GB, oba s nejnovejsim firmwarem     NEVIDI
+ Secure erase, smazani oddilu, inicializace jako MBR         NEVIDI
+ BIOS panelu, Clonezilla (32 bit), Windows XP z CF karty     NEVIDI ani jeden
+ Stejny disk pres USB adapter v PC                           OK, zdravy
+ SU650 512 GB ve stejne sachte panelu                        OK
+ Puvodni HDD ve stejne sachte                                OK
+
+ Jadro Linuxu na panelu hlasi se 120GB diskem na vsech portech:
+     SATA link down (SStatus 0 SControl 300)
+ = zadna odezva na fyzicke urovni. Disk sam eviduje 16 hardwarovych resetu
+ linky: panel se opakovane pokousel spojeni navazat.
+
+------------------------------------------------------------------------------
+ POROVNANI DISKU   (ATA IDENTIFY pres USB adapter, smartctl 7.4)
+------------------------------------------------------------------------------
+ Udaj                       ADATA SU650     ADATA SU650     Crucial BX500
+                             120 GB          512 GB          240 GB
+ --------------------------  --------------  --------------  --------------
+ V panelu (CP6201-...-0010)  NEVIDI          FUNGUJE         NEVIDI
+ Model                       ADATA SU650     ADATA SU650     CT240BX500SSD1
+ Oznaceni na stitku konci    ...T            ...TG           -
+ Firmware                    XD0R3C0A        HT5310B3        M6CR056
+ Norma                       SATA 3.0, ACS-3 SATA 3.2, ACS-4 SATA 3.3, ACS-3
+ Kompatibilita ATA-2/ATA-3   ne / ne         ano / ano       ne / ano
+ Rychlosti 1,5 / 3 / 6 Gb/s  ano             ano             ano
+ Device Sleep (DEVSLP)       ne              ano             ano
+ Power Disable (pin P3)      ne              ne              ne
+ DIPM (sprava napajeni)      ano             ne              ano
+ Seriove cislo               2N11291EAA1W    4Q0321395038    2338E87817DD
+
+ Uplne odlisna rada firmwaru (XD... proti HT...) = jiny radic uvnitr disku.
+ Hypoteza s pinem DEVSLP / Power Disable je vyloucena: 120GB disk tyto
+ funkce vubec nema a 512GB, ktery DEVSLP ma, funguje.
+
+ Crucial BX500 240 GB: panel ho NEVIDI (overeno 5. 10. 2026), prestoze ma
+ DEVSLP jako funkcni 512GB. Z identifikace se to predpovedet nedalo:
+ navazovani linky v ni zapsane neni. Rozhoduje jen zkouska v panelu.
+
+ Nefunkcni jsou 2 ruzne znacky (ADATA 120 GB, Crucial 240 GB), funkcni je
+ zatim jen ADATA SU650 512 GB s firmwarem HT5310B3. Problem tedy neni
+ jedna znacka, ale starsi radic SATA v panelu, ktery se s casti
+ soucasnych SSD nedomluvi.
+
+ Druhy panel CP6201-...-0013: nefunkcni SSD nevidi take (BIOS, Clonezilla
+ ani XP z CF karty). Vymena panelu nepomuze, rozhoduje disk.
+
+------------------------------------------------------------------------------
+ POMUZE JINY FIRMWARE?
+------------------------------------------------------------------------------
+ Ne. Firmware rady HT... patri k jinemu radici a na 120GB disk nahrat nejde.
+ Starsi verze rady XD... by musela zmenit navazovani linky, ktere je z velke
+ casti dane hardwarem radice. ADATA starsi verze oficialne nevydava.
+ Neoficialni servisni nastroje vyrobce radice muzou disk znicit a rusi
+ zaruku.
+
+------------------------------------------------------------------------------
+ POSTUP PRI NAKUPU SSD PRO TYTO PANELY
+------------------------------------------------------------------------------
+ Nazev modelu nestaci, vyrobce pod stejnym jmenem meni radice.
+ Voditko: funkcni 512GB kus konci na stitku "TG", nefunkcni 120GB jen "T".
+ Vychazi to ze dvou typu kusu, takze konkretni kus se stejne overuje:
+
+ 1. Disk pripojit pres USB adapter k PC a precist model a firmware
+    (smartmontools, spustit jako spravce):
+        smartctl -d sat,12 -i /dev/sdX
+ 2. Zasunout do sachty panelu, nabootovat flashku s Clonezillou:
+    v menu 6 (Informace o discich) musi byt disk videt.
+ 3. Teprve potom objednat dalsi kusy se stejnym firmwarem.
+    U SU650 funguje firmware rady HT5..., rada XD0... ne.
+ 4. Alternativa: prumyslove SSD, ktere Beckhoff dodava jako nahradni dil
+    pro radu CP62xx.
+
+------------------------------------------------------------------------------
+ HARDWARE PANELU
+------------------------------------------------------------------------------
+ Radic                         PCI ID      Ovladac Linux  Pripojeno
+ ----------------------------  ----------  -------------  -------------------
+ Intel ICH7 IDE                8086:27df   ata_piix       CF slot
+ Intel ICH7R SATA, rezim RAID  8086:27c3   ahci           sachta pro 2,5" disk
+
+------------------------------------------------------------------------------
+ POZNAMKY
+------------------------------------------------------------------------------
+ * Podklady: logy restore.sh z flashky (restore-logs/), vypisy smartctl
+   obou disku.
+ * Pricina neni ve skriptu restore.sh: disky nefiltruje, co nevidi jadro,
+   nevidi ani on.
+ * Pri bootu flashky na panelu se objevovalo hlaseni o neznamem grafickem
+   rezimu 317 (vga=791). Polozky menu na flashce ted maji vga=normal.
+==============================================================================

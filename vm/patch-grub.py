@@ -11,10 +11,23 @@ import re
 import sys
 
 
+def tweak(s: str) -> str:
+    """Menu čeká 3 s místo 30 s; v našich položkách (--id live-auto*, live-rucne*) je vidět výpis startu."""
+    s = re.sub(r'^set timeout="?30"?$', 'set timeout="3"', s, count=1, flags=re.M)
+    return re.sub(r'(menuentry "[^"]*" --id live-(?:auto|rucne)[^\n]*\n(?:[^\n]*\n)*?\})',
+                  lambda m: m.group(1).replace(' quiet loglevel=0', '').replace(' quiet', '').replace(' loglevel=0', ''),
+                  s)
+
+
 def patch(path: str) -> None:
     s = open(path, encoding='utf-8').read()
     if '--id live-auto' in s:
-        print(f'{path}: už upraveno, přeskakuji')
+        f = tweak(s)
+        if f != s:
+            open(path, 'w', encoding='utf-8', newline='\n').write(f)
+            print(f'{path}: už upraveno, doplněno výpis startu / timeout 3 s')
+        else:
+            print(f'{path}: už upraveno, přeskakuji')
         return
     m = re.search(r'menuentry [^\n]*"Clonezilla live \(KMS\)"\s*\{\n(?:[^\n]*\n)*?\s*(\$linux_cmd [^\n]*)\n', s)
     first = re.search(r'^menuentry [^\n]*"Clonezilla live \(VGA 800x600\)"', s, re.M)
@@ -37,7 +50,7 @@ def patch(path: str) -> None:
 
     new = (entry('AUTOMATICKY restore.sh (velke pismo)', 'live-auto', auto)
            + entry('Clonezilla live RUCNE (KMS)', 'live-rucne', line))
-    s = s[:first.start()] + new + s[first.start():]
+    s = tweak(s[:first.start()] + new + s[first.start():])
     open(path, 'w', encoding='utf-8', newline='\n').write(s)
     print(f'{path}: upraveno')
 

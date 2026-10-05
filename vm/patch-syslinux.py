@@ -22,13 +22,25 @@ def fix_vga(s: str) -> str:
     return '\nlabel '.join(out)
 
 
+def short_timeout(s: str) -> str:
+    """Menu čeká na výběr 3 s místo 30 s; v našich položkách je vidět výpis startu (bez quiet / loglevel=0),
+    ať je na panelu poznat, kde se start zdrží nebo zasekne."""
+    s = s.replace('\ntimeout 300\n', '\ntimeout 30\n', 1).replace('\ntimeout 100\n', '\ntimeout 30\n', 1)
+    out = []
+    for part in s.split('\nlabel '):
+        if part.startswith(('Clonezilla live AUTO', 'Clonezilla live RUCNE')):
+            part = part.replace(' quiet loglevel=0', '').replace(' quiet', '').replace(' loglevel=0', '')
+        out.append(part)
+    return '\nlabel '.join(out)
+
+
 def patch(path: str) -> None:
     s = open(path, encoding='utf-8').read()
     if 'label Clonezilla live AUTO restore' in s:
-        f = fix_vga(s)
+        f = short_timeout(fix_vga(s))
         if f != s:
             open(path, 'w', encoding='utf-8', newline='\n').write(f)
-            print(f'{path}: už upraveno, opraveno jen vga=791 -> vga=normal')
+            print(f'{path}: už upraveno, doplněno vga=normal / výpis startu / timeout 3 s')
         else:
             print(f'{path}: už upraveno, přeskakuji')
         return
@@ -52,6 +64,7 @@ def patch(path: str) -> None:
     first_end = s.index('\nlabel ', a + 5)
     first = s[a:first_end].replace('  MENU DEFAULT\n', '  # MENU DEFAULT\n', 1)
     s = s[:a] + auto + '\n' + hand + '\n' + first + s[first_end:]
+    s = short_timeout(s)
     open(path, 'w', encoding='utf-8', newline='\n').write(s)
     print(f'{path}: upraveno')
 

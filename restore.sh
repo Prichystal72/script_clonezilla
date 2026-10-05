@@ -879,8 +879,11 @@ storage_controllers() {
 
 # Diagnostika disků a řadičů (jádro, PCI, lsblk, dmesg) – text pro log / okno
 storage_diag() {
-    local addr cls id drv
-    echo "Jádro: $(uname -r) ($(uname -m))"
+    local addr cls id drv f
+    echo "Jádro: $(uname -r) ($(uname -m)), od zapnutí do startu skriptu: $(cut -d' ' -f1 /proc/uptime 2>/dev/null) s"
+    for f in sys_vendor product_name product_version board_name bios_version bios_date; do
+        [[ -r /sys/class/dmi/id/$f ]] && printf '%s: %s\n' "$f" "$(<"/sys/class/dmi/id/$f")"
+    done
     echo "Řadiče disků (PCI adresa, třída, ID, ovladač):"
     while read -r addr cls id drv; do
         echo "  $addr  $cls  [$id]  $drv"
