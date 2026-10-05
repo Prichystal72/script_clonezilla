@@ -241,7 +241,8 @@ Obojí se po startu chová stejně: větší písmo, žádné dotazy na jazyk a 
 
 | Co | Jak |
 | --- | --- |
-| ISO s automatickým startem | `bash vm/make-vm-iso.sh clonezilla-live-….iso clonezilla-live-….-vm.iso` (Linux / WSL, xorriso) |
+| ISO s automatickým startem a `restore.sh` | **Windows bez WSL:** `py -3 -m pip install --user pycdlib`, pak `py -3 vm/make-vm-iso.py clonezilla-live-….iso clonezilla-live-….-vm.iso` – ISO obsahuje i aktuální `restore.sh`, disk `scripts.vmdk` není potřeba (po změně skriptu ISO znovu sestavit) |
+| ISO s automatickým startem (bez skriptu) | `bash vm/make-vm-iso.sh clonezilla-live-….iso clonezilla-live-….-vm.iso` (Linux / WSL, xorriso) |
 | Virtuální disk se skriptem | `sudo bash vm/make-script-disk.sh restore.sh "…/scripts.vmdk"` (VM vypnutá) |
 | Flashka se stejným menu | `bash vm/make-flash.sh /mnt/e` (viz níže) |
 
@@ -397,6 +398,7 @@ Automatické spuštění po bootu (volitelné): do parametrů jádra v `syslinux
 | `simulace.cmd` | spuštění simulace ve WSL dvojklikem |
 | `vm/start.sh` | automatický start po bootu Clonezilly (písmo, najde a spustí `restore.sh`) |
 | `vm/make-vm-iso.sh`, `vm/patch-syslinux.py`, `vm/patch-grub.py` | upravená kopie ISO / úprava menu bootu (BIOS, UEFI) |
+| `vm/make-vm-iso.py` | totéž ISO na Windows bez WSL (pycdlib), navíc s `restore.sh`; bez hybridního MBR – jen pro VM / CD, ne pro `dd` na USB |
 | `vm/make-script-disk.sh` | virtuální disk VMware se `restore.sh` |
 | `vm/make-flash.sh` | stejné menu a skripty na flashku |
 | `vm/patch-live64.py` | do menu flashky přidá 64bitovou Clonezillu z `live64/` a volby SATA 1,5 Gb/s |

@@ -22,6 +22,16 @@ for d in $(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}'); do
         umount "$M"
     fi
 done
+# Záloha: restore.sh přímo na bootovacím médiu (ISO z make-vm-iso.py ve VM, CD)
+for B in /run/live/medium /usr/lib/live/mount/medium /lib/live/mount/medium; do
+    if [[ -f "$B/restore.sh" ]]; then
+        echo "Nalezeno na bootovacím médiu: $B"
+        cd / && bash "$B/restore.sh"
+        echo
+        echo "restore.sh skončil. Příkazový řádek: napiš příkaz, restart: sudo reboot"
+        exec bash
+    fi
+done
 echo "restore.sh nebyl nalezen na žádném oddílu (flashka / disk VM)."
 echo "Zkontroluj připojení flashky nebo disku: lsblk"
 exec bash
