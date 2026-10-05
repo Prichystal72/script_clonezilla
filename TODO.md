@@ -15,6 +15,10 @@ Stav k verzi 1.2.14 (4. 10. 2026). Regrese prošla i uvnitř 32bitové Clonezill
 - [ ] Obnova přímo na **interní disk** panelu nebo PC (Clonezilla nabootovaná na tom stroji)
 - [ ] Clonezilla na **reálném počítači** (ne VM): konzole 80×25, framebuffer, česká klávesnice (Y/Z)
 - [ ] Kopie logu do `restore-logs/` na flashce, když Clonezilla bootuje z flashky (`/run/live/medium`)
+      – do 1.2.14 se nekopíroval vůbec (flashka připojená jen pro čtení), od 1.2.15 přes `remount,rw`; ověřit na panelu
+- [x] **Beckhoff CP6201-xxxx-0010 (XP, ICH7R SATA v režimu RAID, `ahci`)** – 5. 10. 2026: SSD **ADATA SU650 120 GB**
+      (2 kusy, poslední FW, po secure erase) nevidí BIOS, Clonezilla ani XP (`SATA link down (SStatus 0)`); ADATA SU650
+      512 GB ve stejné šachtě vidí Clonezilla i XP. Nejde o skript – nová SSD nejdřív vyzkoušet v panelu (menu 6, XP z CF)
 
 - [ ] **Barvy oken** (zdroj zelená, cíl červená) ve VM s `dialog` – v testech jsou ověřené jen soubory motivu a plain režim
 - [ ] **Flashka** upravená `vm/make-flash.sh` (BIOS i UEFI menu): ověřit boot na skutečném počítači – BIOS / legacy i UEFI

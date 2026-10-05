@@ -292,6 +292,21 @@ startem `restore.sh`, rozpoznáním flashky, klonem FAT32 + NTFS 4 → 8 GB a ex
 uvnitř jejího systému (partclone 0.3.23, util-linux 2.38, exfatprogs 1.2.0): simulace 50, matice 553 (bez exFAT –
 jádro WSL ho nemá), loop testy 258 a menu 42 kontrol bez chyby. Boot na skutečném počítači zatím ověřený není.
 
+### 32bitová i 64bitová Clonezilla na jedné flashce
+
+Na flashku s 32bitovou Clonezillou (upravenou `make-flash.sh`) jde přidat 64bitovou vedle – původní zůstává výchozí:
+
+1. Z ISO 64bitové Clonezilly (např. 3.3.3-37-amd64, ve Windows ISO připojit dvojklikem) zkopíruj z `live\` soubory
+   `vmlinuz`, `initrd.img`, `filesystem.squashfs`, `filesystem.packages*` a `Clonezilla-Live-Version`
+   do nové složky **`live64\`** na flashce.
+2. Uprav menu (původní se uloží jako `*.pre64`):
+   `python3 vm/patch-live64.py E:/syslinux/syslinux.cfg E:/syslinux/isolinux.cfg E:/boot/grub/grub.cfg`
+   (ve Windows `py -3 …`).
+
+V menu (BIOS i UEFI) pak jsou položky AUTOMATICKY 32bit (výchozí), 32bit se SATA 1,5 Gb/s
+(`libata.force=1.5Gbps` – starý řadič, který se s novým SSD nedomluví), 64bit (`live-media-path=/live64`, jen
+64bitový procesor), 64bit se SATA 1,5 Gb/s a RUČNĚ 32bit / 64bit. Na panelu zatím neověřeno.
+
 ## Kontrola výsledku a první start panelu
 
 Před vložením disku do panelu zkontroluj tabulku oddílů. V Clonezille (po ukončení skriptu volbou 0):
@@ -327,6 +342,7 @@ označen ke kontrole. Na počítači, kde disk kontroluješ, nic neopravuj.
 | Ve výběru není očekávaná záloha | záloha je hlouběji než 3 složky nebo na jiném oddílu | volba *Automaticky prohledat*; kontrola: `sudo find /zal -maxdepth 8 -name parts` |
 | Záloha v `$RECYCLE.BIN` | smazaná záloha v koši Windows | verze 1.1.0 koš přeskakuje |
 | Cílový disk je *CHRÁNĚNO* | flashka, disk se zálohami nebo připojený oddíl | připojený oddíl skript nabídne odpojit |
+| Vidět jsou jen USB disky, interní (CF, SSD) chybí | jádro Clonezilly nemá ovladač řadiče (IDE slot CF, režim RAID) | skript po startu zkusí ovladače načíst; jinak okno *Interní disk nenalezen* s řadiči a radou (BIOS: IDE / AHCI, CF do USB čtečky) |
 | *Data se nevejdou … Nic nebylo zapsáno* | cílový disk je menší než data | větší disk nebo menší velikosti v režimu 3 |
 | Chybí místo pro dočasný soubor | zmenšení potřebuje místo ≈ obsazená data + 10 % | parametr `--tmpdir /cesta` na disk s místem |
 | Ve Windows *Warning* u NTFS | NTFS označen ke kontrole po změně velikosti | v pořádku, chkdsk doběhne při 1. startu panelu |
@@ -335,7 +351,8 @@ označen ke kontrole. Na počítači, kde disk kontroluješ, nic neopravuj.
 | FAT16 se nezvětšila přes 2 GB | FAT16 víc neunese | zbytek disku zůstane volný (skript upozorní) |
 | Prázdný velký ext4 se nevejde na malý disk | metadata ext4 (tabulky inodů) se počítají jako obsazená | větší cílový disk |
 
-Log každého běhu je v `/tmp/restore-<datum>.log` a kopie ve složce `restore-logs/` na flashce.
+Log každého běhu je v `/tmp/restore-<datum>.log` a kopie ve složce `restore-logs/` na flashce
+(flashka se pro zápis logu na chvíli přepojí pro zápis, Clonezilla ji má jen pro čtení).
 Při chybě ho přilož k hlášení.
 
 ## Přehled příkazů
@@ -382,6 +399,7 @@ Automatické spuštění po bootu (volitelné): do parametrů jádra v `syslinux
 | `vm/make-vm-iso.sh`, `vm/patch-syslinux.py`, `vm/patch-grub.py` | upravená kopie ISO / úprava menu bootu (BIOS, UEFI) |
 | `vm/make-script-disk.sh` | virtuální disk VMware se `restore.sh` |
 | `vm/make-flash.sh` | stejné menu a skripty na flashku |
+| `vm/patch-live64.py` | do menu flashky přidá 64bitovou Clonezillu z `live64/` a volby SATA 1,5 Gb/s |
 | `ZADANI_restore(1).md` | zadání |
 
 ### Simulace (bez rootu, nic nezapisuje)

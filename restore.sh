@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.2.14"
+readonly VERSION="1.2.15"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -851,6 +851,112 @@ disk_all() {
         [[ "$d" == @(sr*|zram*|ram*|fd*) ]] && continue
         echo "$d"
     done
+    return 0
+}
+
+# Je vidět nějaký disk mimo USB (kromě flashky s Clonezillou)?
+disk_have_internal() {
+    local d
+    for d in $(disk_all); do
+        [[ "$d" == "$LIVE_DISK" || "${BLK[$d.TRAN]:-}" == usb ]] && continue
+        return 0
+    done
+    return 1
+}
+
+# Řadiče disků z /sys (PCI třída 01xx): "adresa třída vendor:device ovladač" na řádek
+storage_controllers() {
+    local dev cls drv
+    for dev in /sys/bus/pci/devices/*; do
+        [[ -r "$dev/class" ]] || continue
+        cls=$(<"$dev/class")
+        [[ "$cls" == 0x01* ]] || continue
+        drv=-
+        [[ -L "$dev/driver" ]] && drv=$(basename "$(readlink "$dev/driver")")
+        echo "${dev##*/} ${cls:2:4} $(<"$dev/vendor"):$(<"$dev/device") $drv"
+    done | sed 's/0x//g'
+}
+
+# Diagnostika disků a řadičů (jádro, PCI, lsblk, dmesg) – text pro log / okno
+storage_diag() {
+    local addr cls id drv
+    echo "Jádro: $(uname -r) ($(uname -m))"
+    echo "Řadiče disků (PCI adresa, třída, ID, ovladač):"
+    while read -r addr cls id drv; do
+        echo "  $addr  $cls  [$id]  $drv"
+    done < <(storage_controllers)
+    if sys_have lspci; then
+        echo "lspci -nnk:"
+        lspci -nnk 2>/dev/null | sed 's/^/  /'
+    fi
+    echo "Disky (lsblk):"
+    lsblk -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL,FSTYPE,MOUNTPOINT 2>/dev/null | sed 's/^/  /'
+    echo "Hlášení jádra o discích (dmesg):"
+    dmesg 2>/dev/null | grep -i -E ' ata[0-9]|pata|sata|ahci|ide[0-9]|scsi|nvme| sd[a-z]|mmc' | tail -n 60 | sed 's/^/  /'
+    return 0
+}
+
+# Po startu: řadiče disků bez ovladače (disky na nich nejsou vidět, např. SATA vedle CF na panelu
+# Beckhoff) zkusí oživit načtením ovladače podle PCI ID. Diagnostiku vždy zapíše do logu; když řadič
+# zůstane bez ovladače nebo jsou vidět jen USB disky, ukáže okno s radou. Nic nezapisuje na disky.
+disk_check_internal() {
+    (( SIMULATE || ALLOW_LOOP )) && return 0
+    [[ "$ACTION" == menu ]] || return 0
+
+    local addr cls id drv dev i nodrv=() raid=() txt ndisk
+    while read -r addr cls id drv; do
+        [[ "$drv" == - ]] && nodrv+=("$addr")
+    done < <(storage_controllers)
+    if (( ${#nodrv[@]} )) || ! disk_have_internal; then
+        info "Zkouším načíst ovladače řadičů disků (bez ovladače: ${nodrv[*]:-žádný})."
+        ndisk=${#BLK_DISKS[@]}
+        for addr in "${nodrv[@]}"; do
+            dev=/sys/bus/pci/devices/$addr
+            [[ -r "$dev/modalias" ]] && { run_try modprobe -a -q "$(<"$dev/modalias")" || true; }
+        done
+        # obecný ovladač pro IDE řadiče (CF sloty), které nemají vlastní
+        run_try modprobe -a -q ata_generic pata_acpi || true
+        for i in 1 2 3 4 5 6; do
+            udevadm settle --timeout=5 2>/dev/null || true
+            sleep 1
+        done
+        blk_load
+        live_detect
+        (( ${#BLK_DISKS[@]} > ndisk )) && ok "Po načtení ovladačů přibyly disky: ${BLK_DISKS[*]}."
+    fi
+
+    txt=$(storage_diag)
+    _log_file "=== Diagnostika disků ==="
+    printf '%s\n' "$txt" >>"$LOG_FILE" 2>/dev/null || true
+
+    nodrv=()
+    while read -r addr cls id drv; do
+        [[ "$drv" == - ]] && nodrv+=("$addr [$id]")
+        [[ "$cls" == 0104 ]] && raid+=("$addr [$id]")
+    done < <(storage_controllers)
+    if disk_have_internal && (( ! ${#nodrv[@]} )); then
+        log_copy_flash
+        return 0
+    fi
+
+    if disk_have_internal; then
+        txt="Některý řadič disků nemá ovladač – disky na něm (např. SSD na SATA) nejsou vidět."$'\n\n'"$txt"
+    else
+        txt="Clonezilla vidí jen USB disky – interní disk (CF karta, SSD, HDD) jádro nenašlo."$'\n\n'"$txt"
+    fi
+    txt+=$'\n\nCo s tím:\n'
+    if (( ${#nodrv[@]} )); then
+        txt+="- Řadič bez ovladače: ${nodrv[*]}. Jádro této Clonezilly ($(uname -m)) ho neumí."$'\n'
+        txt+="  V BIOSu panelu zkus jiný režim řadiče (IDE / Compatible / Enhanced), po obnově vrať zpět."$'\n'
+    fi
+    if (( ${#raid[@]} )); then
+        txt+="- Řadič v režimu RAID: ${raid[*]}. V BIOSu přepni na IDE (XP na AHCI nenabootuje)."$'\n'
+    fi
+    txt+="- Náhradní cesta: disk / CF kartu obnovit nebo zálohovat přes USB adaptér / čtečku."$'\n'
+    txt+=$'\n'"Tento výpis je v logu; log se uloží na flashku do restore-logs/."
+    warn "Řadič disků bez ovladače nebo chybí interní disk – podrobnosti v logu."
+    printf '%s\n' "$txt" | ui_text "Disky: chybí ovladač"
+    log_copy_flash
     return 0
 }
 
@@ -3289,6 +3395,22 @@ action_cleanup() {
     LOOP_DEVS=()
 }
 
+# Kopie logu na flashku do restore-logs/. Live systém má flashku připojenou jen pro čtení –
+# na chvíli ji přepojí pro zápis a pak vrátí zpět (FAT; na ISO 9660 zapsat nejde, pak se nic nestane).
+log_copy_flash() {
+    (( SIMULATE )) && return 0
+    [[ -n "$LIVE_MEDIUM" && -d "$LIVE_MEDIUM" && -f "$LOG_FILE" ]] || return 0
+    local remount=0
+    if [[ ! -w "$LIVE_MEDIUM" ]]; then
+        mount -o remount,rw "$LIVE_MEDIUM" 2>/dev/null || return 0
+        remount=1
+    fi
+    mkdir -p "$LIVE_MEDIUM/restore-logs" 2>/dev/null && cp "$LOG_FILE" "$LIVE_MEDIUM/restore-logs/" 2>/dev/null
+    sync
+    (( remount )) && mount -o remount,ro "$LIVE_MEDIUM" 2>/dev/null
+    return 0
+}
+
 on_err() {
     local line=$1 cmd=$2 rc=$3
     err "Chyba na řádku $line (kód $rc): $cmd"
@@ -3299,11 +3421,9 @@ on_exit() {
     set +e
     action_cleanup
     src_umount
-    if (( ! SIMULATE )) && [[ -n "$LIVE_MEDIUM" && -w "$LIVE_MEDIUM" && -f "$LOG_FILE" ]]; then
-        mkdir -p "$LIVE_MEDIUM/restore-logs" 2>/dev/null && cp "$LOG_FILE" "$LIVE_MEDIUM/restore-logs/" 2>/dev/null
-    fi
-    [[ -n "${STATE_DIR:-}" ]] && rm -rf "$STATE_DIR"
     _log_file "=== konec, kód $rc ==="
+    log_copy_flash
+    [[ -n "${STATE_DIR:-}" ]] && rm -rf "$STATE_DIR"
     (( rc )) && [[ -n "$LOG_FILE" ]] && printf 'Log: %s\n' "$LOG_FILE" >&2
     exit "$rc"
 }
@@ -4092,6 +4212,7 @@ main() {
     check_deps
     blk_load
     live_detect
+    disk_check_internal
     src_refresh
 
     case "$ACTION" in
