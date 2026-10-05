@@ -41,7 +41,8 @@
  Stejny disk pres USB adapter v PC                           OK, zdravy
  SU650 512 GB ve stejne sachte panelu                        OK
  Puvodni HDD ve stejne sachte                                OK
- Vynucena rychlost SATA 1,5 Gb/s (libata.force=1.5Gbps)      NEVIDI (link down)
+ Vynucena rychlost SATA 1,5 Gb/s (libata.force=1.5Gbps)      NEPRUKAZNE*
+   * v logu byl disk pripojeny pres USB adapter (uas), sachta prazdna
 
  Jadro Linuxu na panelu hlasi se 120GB diskem na vsech portech:
      SATA link down (SStatus 0 SControl 300)
