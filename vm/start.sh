@@ -5,6 +5,17 @@
 setfont Lat2-Terminus24x12 2>/dev/null || true
 clear
 echo "Hledám restore.sh na flashce nebo disku..."
+# 1. vlastní bootovací médium (flashka s Clonezillou, ISO ve VM) – každé spouští svou verzi skriptu
+for B in /run/live/medium /usr/lib/live/mount/medium /lib/live/mount/medium; do
+    if [[ -f "$B/restore.sh" ]]; then
+        echo "Nalezeno na bootovacím médiu: $B"
+        cd / && bash "$B/restore.sh"
+        echo
+        echo "restore.sh skončil. Příkazový řádek: napiš příkaz, restart: sudo reboot"
+        exec bash
+    fi
+done
+# 2. ostatní oddíly (starší VM s diskem scripts.vmdk)
 M=/mnt/rs
 mkdir -p "$M"
 for d in $(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}'); do
@@ -20,16 +31,6 @@ for d in $(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}'); do
             exec bash
         fi
         umount "$M"
-    fi
-done
-# Záloha: restore.sh přímo na bootovacím médiu (ISO z make-vm-iso.py ve VM, CD)
-for B in /run/live/medium /usr/lib/live/mount/medium /lib/live/mount/medium; do
-    if [[ -f "$B/restore.sh" ]]; then
-        echo "Nalezeno na bootovacím médiu: $B"
-        cd / && bash "$B/restore.sh"
-        echo
-        echo "restore.sh skončil. Příkazový řádek: napiš příkaz, restart: sudo reboot"
-        exec bash
     fi
 done
 echo "restore.sh nebyl nalezen na žádném oddílu (flashka / disk VM)."

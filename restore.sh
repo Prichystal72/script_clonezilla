@@ -13,7 +13,7 @@ if [[ "$(< "$0")" == *$'\r'* ]]; then printf '%s\n' "CHYBA: $0 obsahuje Windows 
 set -Eeuo pipefail
 shopt -s nullglob extglob
 
-readonly VERSION="1.2.15"
+readonly VERSION="1.2.16"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 readonly SCRIPT_PATH SCRIPT_DIR
@@ -1948,7 +1948,12 @@ fs_grow() {
         vfat|fat|fat12|fat16|fat32|exfat)
             [[ -n "$old" ]] || old=$(fat_fs_bytes "$dev")
             [[ -n "$start" ]] || start=$(cat "/sys/class/block/${dev##*/}/start" 2>/dev/null || true)
-            if [[ -n "$old" ]]; then
+            local kind=""
+            [[ "$fs" == exfat ]] || kind=$(fat_boot_kind "$dev") || kind=""
+            if [[ "$kind" == dos || "$kind" == ce ]]; then
+                # zavaděč DOS / Windows CE hledá soubory podle pozice – přestavba FAT by je přesunula
+                warn "FAT na $dev obsahuje zavaděč (${kind^^}) citlivý na pozici souborů – zůstává v původní velikosti, zbytek oddílu je nevyužitý."
+            elif [[ -n "$old" ]]; then
                 fs_fat_rebuild "$dev" "$old" "${start:-0}" "$fs"
             elif [[ "$fs" == exfat ]]; then
                 warn "exFAT na $dev se nezvětšil (velikost FS se nepodařilo zjistit)."
@@ -3645,6 +3650,45 @@ fat_label_copy() {
     _log_file "popisek FAT zkopírován z $src (položka $e) do $dst"
 }
 
+# Zavaděč na FAT citlivý na pozici souborů: syslinux:<adresář ldlinux.sys> | dos | ce | prázdné
+# fat_boot_kind <zařízení>   (v simulaci / dry-runu nic nehledá; když nejde připojit, vrátí prázdné –
+# obnova pak pokračuje jako dřív, nikdy kvůli tomu neskončí)
+fat_boot_kind() {
+    local dev=$1 m d kind=""
+    (( SIMULATE || DRY_RUN )) && return 0
+    m=$(mktemp -d /tmp/restore-kind.XXXXXX 2>/dev/null) || return 0
+    if mount -o ro "$dev" "$m" 2>/dev/null; then
+        for d in "" syslinux boot/syslinux; do
+            if [[ -e "$m/${d:+$d/}ldlinux.sys" ]]; then kind="syslinux:$d"; break; fi
+        done
+        if [[ -z "$kind" ]]; then
+            if [[ -e "$m/io.sys" || -e "$m/ibmbio.com" || -e "$m/msdos.sys" ]]; then kind=dos
+            elif [[ -e "$m/nk.bin" ]]; then kind=ce; fi
+        fi
+        umount "$m" 2>/dev/null || true
+    fi
+    rmdir "$m" 2>/dev/null || true
+    echo "$kind"
+    return 0
+}
+
+# Po přestavbě FAT znovu nainstalovat syslinux (jako makeboot.sh Clonezilly): ldlinux.sys a boot sektor
+# odkazují na pozici souborů. Bere se syslinux z FS (utils/linux, stejná verze jako ldlinux.c32), jinak systémový.
+# fat_syslinux_fix <zařízení> <adresář ldlinux.sys> <cesta k syslinuxu ve FS nebo prázdné>
+fat_syslinux_fix() {
+    local dev=$1 dir=$2 bin=$3
+    if [[ -z "$bin" ]] && sys_have syslinux; then bin=syslinux; fi
+    if [[ -z "$bin" ]]; then
+        warn "FAT na $dev obsahuje syslinux, ale nástroj syslinux chybí – flashka nemusí nabootovat (BIOS). Oprava: utils/linux/makeboot.sh $dev"
+        return 0
+    fi
+    if run_try "$bin" ${dir:+-d "$dir"} -f -i "$dev"; then
+        ok "Zavaděč syslinux na $dev znovu nainstalován (${dir:-kořen})."
+    else
+        warn "Instalace syslinuxu na $dev selhala – flashka nemusí nabootovat (BIOS). Oprava: utils/linux/makeboot.sh $dev"
+    fi
+}
+
 # fs_fat_copy <zdroj> <cíl> <začátek_oddílu_cíle>
 fs_fat_copy() {
     local src=$1 dst=$2 start=$3 uuid id label ver bits off cnt ms md
@@ -3672,14 +3716,26 @@ fs_fat_copy() {
     fi
     files_copy "$ms" "$md" keep
     # varování jen u FAT se systémem (Windows CE, DOS, zavaděč Windows) – u dat je to v pořádku
-    local sys="" f
+    local sys="" f sl="" sldir="" slbin="" a
     if (( ! SIMULATE && ! DRY_RUN )); then
         for f in "$md"/*; do
             case "${f##*/}" in [Nn][Kk].[Bb][Ii][Nn]|[Ii][Oo].[Ss][Yy][Ss]|[Bb][Oo][Oo][Tt][Mm][Gg][Rr]|[Nn][Tt][Ll][Dd][Rr]) sys=${f##*/}; break ;; esac
         done
+        # syslinux (flashka s Clonezillou apod.): přestavbou FAT se ldlinux.sys přesunul → po kopii znovu nainstalovat
+        for f in "" syslinux boot/syslinux; do
+            if [[ -e "$md/${f:+$f/}ldlinux.sys" ]]; then sl=1 sldir=$f; break; fi
+        done
+        if [[ -n "$sl" ]]; then
+            a=x86; [[ "$(uname -m)" == x86_64 ]] && a=x64
+            if [[ -f "$md/utils/linux/$a/syslinux" ]]; then
+                slbin="$STATE_DIR/syslinux"
+                cp "$md/utils/linux/$a/syslinux" "$slbin" && chmod +x "$slbin" || slbin=""
+            fi
+        fi
     fi
     tmp_umount "$md"
     tmp_umount "$ms"
+    [[ -n "$sl" ]] && fat_syslinux_fix "$dst" "$sldir" "$slbin"
     if [[ -n "$sys" ]]; then
         warn "FAT na $dst byla vytvořena znovu (FAT$bits, ID $uuid) a obsahuje systém ($sys) – atributy Skrytý/Systémový se nezachovají, ověř boot na zařízení."
     else
