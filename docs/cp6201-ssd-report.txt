@@ -35,7 +35,7 @@
 ------------------------------------------------------------------------------
  Pokus                                                       Vysledek
  ----------------------------------------------------------  ----------------
- Dva nove kusy SU650 120 GB, oba s nejnovejsim firmwarem     NEVIDI
+ Tri nove kusy SU650 120 GB (2 s nejnovejsim FW, 1 dalsi)    NEVIDI
  Secure erase, smazani oddilu, inicializace jako MBR         NEVIDI
  BIOS panelu, Clonezilla (32 bit), Windows XP z CF karty     NEVIDI ani jeden
  Stejny disk pres USB adapter v PC                           OK, zdravy
