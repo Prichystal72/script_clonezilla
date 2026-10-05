@@ -94,8 +94,9 @@
  POSTUP PRI NAKUPU SSD PRO TYTO PANELY
 ------------------------------------------------------------------------------
  Nazev modelu nestaci, vyrobce pod stejnym jmenem meni radice.
- Pripona na stitku NEROZHODUJE: 120GB kus s "TG" (jako funkcni 512GB)
- v panelu take nejde. Overuje se vzdy konkretni kus:
+ Pripona na stitku NEROZHODUJE: 120GB kus s "TG" (jako funkcni 512GB) ma
+ firmware XD0R3C0A (s.c. 2N1129AE11RJ) a v panelu take nejde. Rozhoduje
+ FIRMWARE (= radic uvnitr): XD0R3C0A nejde, HT5310B3 jde. Overuje se kus:
 
  1. Disk pripojit pres USB adapter k PC a precist model a firmware
     (smartmontools, spustit jako spravce):
