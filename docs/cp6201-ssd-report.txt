@@ -45,7 +45,7 @@
    * "ADATA SU 650 0 B" v menu 6 byl PRAZDNY USB adapter (pamatuje si jmeno),
      disk v sachte nenavazal linku ani pri 1,5 Gb/s (SControl 310)
  BIOS: Force Gen1 (1,5 Gb/s) - bylo uz zapnute                NEVIDI
- BIOS: SATA Mode IDE misto RAID                               NEVIDI
+ BIOS: SATA Mode IDE misto RAID (ovladac ata_piix misto ahci) NEVIDI
 
  Jadro Linuxu na panelu hlasi se 120GB diskem na vsech portech:
      SATA link down (SStatus 0 SControl 300)
