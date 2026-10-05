@@ -55,10 +55,11 @@ Ověřeno 4. 10. 2026 klávesnicí na loop discích (`test/test-menus.sh`, 44 ko
 
 - [x] **Obraz vytvořený skriptem obnovit standardní Clonezillou** – ověřeno 4. 10. 2026 (QEMU, Clonezilla 3.3.3,
       `ocs-sr restoredisk`): MBR FAT32 + NTFS, dva disky v jedné záloze, GPT; obraz jen vybraných oddílů (`restoreparts`) zatím ne
-- [ ] **1.2.16 (5. 10. 2026), neověřeno ostře:** kopie flashky s Clonezillou na menší flashku nebootovala (BIOS) –
+- [x] **1.2.16 (5. 10. 2026):** kopie flashky s Clonezillou na menší flashku nebootovala (BIOS) –
       přestavbou FAT se přesunul `ldlinux.sys`. Teď: po přestavbě FAT se syslinux sám znovu nainstaluje
       (`utils/linux/x64|x86/syslinux` z FS, jako `makeboot.sh`); FAT se zavaděčem DOS (`IO.SYS`) nebo CE (`NK.BIN`)
-      se při zvětšení NEpřestavuje (zůstane v původní velikosti). Ověřit: kopie flashky na menší i větší flashku.
+      se při zvětšení NEpřestavuje (zůstane v původní velikosti). OVĚŘENO: klon flashky 32 GB na menší ve VM
+      nabootoval. Zbývá: kopie na větší flashku, zachování DOS/CE FAT při zvětšení na skutečném zařízení.
 - [ ] FAT / exFAT se při zvětšení / zmenšení vytváří znovu (kopie souborů): mění se pořadí souborů a FAT ztrácí atributy H/S
       – ověřit boot Windows CE / DOS z takto zvětšené FAT
 - [ ] Odhad minima ext4 z obrazu je přísný (metadata se počítají jako data) – velký prázdný ext4 na malý disk se odmítne
