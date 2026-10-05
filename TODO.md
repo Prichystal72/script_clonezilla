@@ -33,7 +33,8 @@ Stav k verzi 1.2.14 (4. 10. 2026). Regrese prošla i uvnitř 32bitové Clonezill
       - hlášení „undefined video mode 317“ čekalo ~30 s – opraveno `vga=normal` v našich položkách, ověřit na panelu,
         jestli je konzole čitelná (rozlišení, velikost písma Terminus 24x12 při 800x600 panelu)
       - `disk_check_internal`: při řadiči bez ovladače nebo jen USB discích čeká až 6× (`udevadm settle` + 1 s)
-      - změřit: do diagnostiky v logu přidat `/proc/uptime` při startu skriptu a `systemd-analyze blame`
+      - změřeno 5. 10. 2026 (945GM, menu 3 s, výpis startu): **61,5 s** od zapnutí do startu skriptu – rozpad
+        zjistit `systemd-analyze blame` (v logu zatím není)
 - [ ] UEFI s **32bitovým firmwarem** (některé tablety / panely) – flashka má `bootia32.efi`, neověřeno
 - [ ] Čeština s diakritikou na konzoli Clonezilly (teď se zobrazuje bez háčků a čárek)
 

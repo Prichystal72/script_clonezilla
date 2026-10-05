@@ -41,6 +41,7 @@
  Stejny disk pres USB adapter v PC                           OK, zdravy
  SU650 512 GB ve stejne sachte panelu                        OK
  Puvodni HDD ve stejne sachte                                OK
+ Vynucena rychlost SATA 1,5 Gb/s (libata.force=1.5Gbps)      NEVIDI (link down)
 
  Jadro Linuxu na panelu hlasi se 120GB diskem na vsech portech:
      SATA link down (SStatus 0 SControl 300)
@@ -115,6 +116,8 @@
  ----------------------------  ----------  -------------  -------------------
  Intel ICH7 IDE                8086:27df   ata_piix       CF slot
  Intel ICH7R SATA, rezim RAID  8086:27c3   ahci           sachta pro 2,5" disk
+
+ Deska: Intel 945GM, BIOS PhoenixAward 6.00 PG (10. 2. 2011).
 
 ------------------------------------------------------------------------------
  POZNAMKY
