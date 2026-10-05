@@ -6,8 +6,10 @@ Stav k verzi 1.2.14 (4. 10. 2026). Regrese prošla i uvnitř 32bitové Clonezill
 
 ## 1. Ověřit na skutečném hardwaru
 
-- [ ] **Boot panelu Beckhoff** po obnově – XP Embedded (start 63) z 4GB CF na 120GB SSD
-- [ ] Boot panelu po **sloučení 2 karet** na jeden disk – písmeno datového oddílu (D:/E:), cesty v TwinCAT
+- [x] **Boot panelu Beckhoff** po obnově – 5. 10. 2026 CP6201 (XP, start 63): CF 3,8 GB + HDD 74,5 GB sloučené
+      na SSD ADATA SU650 512 GB (C: 16,4 GB, D: „Daten“ 460 GB), menu 1 „sloučit“, 32bit Clonezilla z flashky.
+      XP naběhlo bez CF, po prvním startu jeden restart (NT AUTHORITY\SYSTEM – u panelu běžné), D: zůstalo D:
+- [ ] Po sloučení: cesty a licence TwinCAT na SSD (boot a písmena ověřené, viz výše)
 - [ ] Boot **WES7** (System Reserved + systém) po zmenšení na menší disk
 - [ ] Boot **Windows CE** po obnově FAT16 bez `fatresize` (FAT vytvořená znovu, boot kód z originálu, NK.BIN)
 - [ ] Panel s **EWF/FBWF** write filtrem – chování po změně velikosti
@@ -19,6 +21,9 @@ Stav k verzi 1.2.14 (4. 10. 2026). Regrese prošla i uvnitř 32bitové Clonezill
 - [x] **Beckhoff CP6201-xxxx-0010 (XP, ICH7R SATA v režimu RAID, `ahci`)** – 5. 10. 2026: SSD **ADATA SU650 120 GB**
       (2 kusy, poslední FW, po secure erase) nevidí BIOS, Clonezilla ani XP (`SATA link down (SStatus 0)`); ADATA SU650
       512 GB ve stejné šachtě vidí Clonezilla i XP. Nejde o skript – nová SSD nejdřív vyzkoušet v panelu (menu 6, XP z CF)
+      Netestováno: přelepit napájecí piny P1–P3 (3,3 V → DEVSLP / Power Disable) – možná příčina „link down“
+- [x] Panel hlásil při bootu flashky „undefined video mode 317“ (`vga=791` = VESA 0x317) a čekal – naše položky menu
+      mají od 5. 10. 2026 `vga=normal` (rozlišení stejně nastaví KMS); `patch-syslinux.py` opraví i už upravenou flashku
 
 - [ ] **Barvy oken** (zdroj zelená, cíl červená) ve VM s `dialog` – v testech jsou ověřené jen soubory motivu a plain režim
 - [ ] **Flashka** upravená `vm/make-flash.sh` (BIOS i UEFI menu): ověřit boot na skutečném počítači – BIOS / legacy i UEFI

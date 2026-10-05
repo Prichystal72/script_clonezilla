@@ -11,17 +11,33 @@ a nic nezmění.
 import sys
 
 
+def fix_vga(s: str) -> str:
+    """vga=791 (VESA 0x317, 1024x768) v našich položkách → vga=normal. Starší panely (Beckhoff) režim 0x317
+    neznají: jádro hlásí "undefined mode number 317" a čeká. Výsledné rozlišení stejně nastaví KMS."""
+    out = []
+    for part in s.split('\nlabel '):
+        if part.startswith(('Clonezilla live AUTO', 'Clonezilla live RUCNE')):
+            part = part.replace('vga=791', 'vga=normal')
+        out.append(part)
+    return '\nlabel '.join(out)
+
+
 def patch(path: str) -> None:
     s = open(path, encoding='utf-8').read()
     if 'label Clonezilla live AUTO restore' in s:
-        print(f'{path}: už upraveno, přeskakuji')
+        f = fix_vga(s)
+        if f != s:
+            open(path, 'w', encoding='utf-8', newline='\n').write(f)
+            print(f'{path}: už upraveno, opraveno jen vga=791 -> vga=normal')
+        else:
+            print(f'{path}: už upraveno, přeskakuji')
         return
     k = s.index('label Clonezilla live KMS\n')
     k_end = s.index('\nlabel ', k + 5)
     kms = s[k:k_end]
     if 'vga=791' not in kms or 'ocs_live_run="ocs-live-general"' not in kms:
         raise SystemExit(f'{path}: neočekávaná podoba položky KMS – nic neměním')
-    base = kms.replace('  # MENU DEFAULT\n', '', 1)
+    base = kms.replace('  # MENU DEFAULT\n', '', 1).replace('vga=791', 'vga=normal')
 
     auto = base.replace('label Clonezilla live KMS\n', 'label Clonezilla live AUTO restore\n  MENU DEFAULT\n', 1)
     auto = auto.replace('MENU LABEL Clonezilla live (^KMS)', 'MENU LABEL ^AUTOMATICKY restore.sh (1024x768, velke pismo)', 1)
