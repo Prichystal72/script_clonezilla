@@ -55,7 +55,7 @@
  --------------------------  --------------  --------------  --------------
  V panelu (CP6201-...-0010)  NEVIDI          FUNGUJE         NEVIDI
  Model                       ADATA SU650     ADATA SU650     CT240BX500SSD1
- Oznaceni na stitku konci    ...T            ...TG           -
+ Oznaceni na stitku konci    ...T (i ...TG)  ...TG           -
  Firmware                    XD0R3C0A        HT5310B3        M6CR056
  Norma                       SATA 3.0, ACS-3 SATA 3.2, ACS-4 SATA 3.3, ACS-3
  Kompatibilita ATA-2/ATA-3   ne / ne         ano / ano       ne / ano
@@ -94,8 +94,8 @@
  POSTUP PRI NAKUPU SSD PRO TYTO PANELY
 ------------------------------------------------------------------------------
  Nazev modelu nestaci, vyrobce pod stejnym jmenem meni radice.
- Voditko: funkcni 512GB kus konci na stitku "TG", nefunkcni 120GB jen "T".
- Vychazi to ze dvou typu kusu, takze konkretni kus se stejne overuje:
+ Pripona na stitku NEROZHODUJE: 120GB kus s "TG" (jako funkcni 512GB)
+ v panelu take nejde. Overuje se vzdy konkretni kus:
 
  1. Disk pripojit pres USB adapter k PC a precist model a firmware
     (smartmontools, spustit jako spravce):
